@@ -53,6 +53,9 @@ function antiShtrafCheck() {
 bot.onText(/\/start/, (msg) => {
   const id = msg.chat.id;
 
+  // Логируем chat info только при /start — идеальный вариант
+  console.log("CHAT INFO:", msg.chat);
+
   if (id === CASHIER) {
     bot.sendMessage(id, "Готов к работе, кассир 👩‍💼", cashierMenu);
   } else if (id === COOK) {
@@ -62,7 +65,7 @@ bot.onText(/\/start/, (msg) => {
   }
 });
 
-// === ОБРАБОТЧИК СООБЩЕНИЙ ===
+// === ОСНОВНОЙ ОБРАБОТЧИК ===
 bot.on("message", (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
