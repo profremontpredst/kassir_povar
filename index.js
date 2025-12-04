@@ -71,6 +71,8 @@ bot.on("message", (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
 
+  console.log("CHAT ID:", msg.chat.id);
+
   // ----- КАССИР -----
   if (id === CASHIER) {
     if (text === "🍳 Приготовить пирожки") {
