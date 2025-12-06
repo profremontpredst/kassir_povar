@@ -1,5 +1,63 @@
 import TelegramBot from "node-telegram-bot-api";
 import express from "express";
+import fetch from "node-fetch";
+
+// === IIKO CONFIG ===
+const IIKO_HOST = "https://db-co.iiko.it/resto/api";
+const IIKO_LOGIN = "xxxppp"; // <-- твой логин
+const IIKO_PASSWORD = "96321"; // <-- твой пароль
+
+let IIKO_SESSION = null;
+
+// === IIKO AUTH ===
+async function iikoAuth() {
+  try {
+    const res = await fetch(`${IIKO_HOST}/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        login: IIKO_LOGIN,
+        password: IIKO_PASSWORD
+      })
+    });
+
+    const sessionKey = await res.text();
+
+    if (!sessionKey || sessionKey.length < 10) {
+      console.error("AUTH FAILED:", sessionKey);
+      return null;
+    }
+
+    IIKO_SESSION = sessionKey;
+    console.log("IIKO SESSION:", sessionKey);
+    return sessionKey;
+  } catch (err) {
+    console.error("AUTH ERROR:", err);
+    return null;
+  }
+}
+
+// === Запрос точек (stores) ===
+async function getStores() {
+  if (!IIKO_SESSION) await iikoAuth();
+
+  const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
+    headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
+  });
+
+  return res.json();
+}
+
+// === Запрос продуктов ===
+async function getProducts() {
+  if (!IIKO_SESSION) await iikoAuth();
+
+  const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
+    headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
+  });
+
+  return res.json();
+}
 
 // Лог для проверки, что файл реально запустился
 console.log("INDEX.JS LOADED");
@@ -64,6 +122,29 @@ bot.onText(/\/start/, (msg) => {
   if (id === CASHIER) bot.sendMessage(id, "Готов к работе, кассир 👩‍💼", cashierMenu);
   else if (id === COOK) bot.sendMessage(id, "Готов к работе, повар 👨‍🍳");
   else bot.sendMessage(id, "У вас нет доступа.");
+});
+
+// === DEBUG: получить ID точек и продуктов ===
+bot.onText(/\/debug_iiko/, async (msg) => {
+  const id = msg.chat.id;
+  if (id !== CASHIER) return bot.sendMessage(id, "Нет доступа.");
+
+  bot.sendMessage(id, "Получаю данные из iiko...");
+
+  const stores = await getStores();
+  const products = await getProducts();
+
+  let storeList = "📍 *Точки / Stores:*\n";
+  stores.forEach((s) => {
+    storeList += `• ${s.name} — \`${s.id}\`\n`;
+  });
+
+  let prodList = "\n🍞 *Продукты:*\n";
+  products.slice(0, 20).forEach((p) => {
+    prodList += `• ${p.name} — \`${p.id}\`\n`;
+  });
+
+  bot.sendMessage(id, storeList + prodList, { parse_mode: "Markdown" });
 });
 
 // === ОСНОВНАЯ ЛОГИКА ===
