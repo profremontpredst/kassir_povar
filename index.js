@@ -3,9 +3,9 @@ import express from "express";
 import fetch from "node-fetch";
 
 // === IIKO CONFIG ===
-const IIKO_HOST = "https://db-co.iiko.it/resto/api";
-const IIKO_LOGIN = "xxxppp"; // <-- твой логин
-const IIKO_PASSWORD = "96321"; // <-- твой пароль
+const IIKO_HOST = "https://db-co.iiko.it/resto/api"; 
+const IIKO_LOGIN = "xxxppp";
+const IIKO_PASSWORD = "96321";
 
 let IIKO_SESSION = null;
 
@@ -31,38 +31,53 @@ async function iikoAuth() {
     IIKO_SESSION = sessionKey;
     console.log("IIKO SESSION:", sessionKey);
     return sessionKey;
+
   } catch (err) {
     console.error("AUTH ERROR:", err);
     return null;
   }
 }
 
-// === Запрос точек (stores) ===
+// === GET STORES ===
 async function getStores() {
-  if (!IIKO_SESSION) await iikoAuth();
+  if (!IIKO_SESSION) {
+    console.log("⚠️ Нет SESSION — пробую авторизацию...");
+    await iikoAuth();
+    console.log("SESSION после авторизации:", IIKO_SESSION);
+  }
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
     headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
   });
 
-  return res.json();
+  console.log("STORES STATUS:", res.status);
+  const raw = await res.text();
+  console.log("STORES RAW:", raw);
+
+  return []; // временно
 }
 
-// === Запрос продуктов ===
+// === GET PRODUCTS ===
 async function getProducts() {
-  if (!IIKO_SESSION) await iikoAuth();
+  if (!IIKO_SESSION) {
+    console.log("⚠️ Нет SESSION — пробую авторизацию...");
+    await iikoAuth();
+    console.log("SESSION после авторизации:", IIKO_SESSION);
+  }
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
     headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
   });
 
-  return res.json();
+  console.log("PRODUCTS STATUS:", res.status);
+  const raw = await res.text();
+  console.log("PRODUCTS RAW:", raw);
+
+  return []; // временно
 }
 
-// Лог для проверки, что файл реально запустился
+// === BOT INIT ===
 console.log("INDEX.JS LOADED");
-
-// Проверяем токен
 console.log("BOT TOKEN:", process.env.BOT_TOKEN);
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
@@ -70,7 +85,7 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const CASHIER = Number(process.env.CASHIER_CHAT_ID);
 const COOK = Number(process.env.COOK_CHAT_ID);
 
-// === ХРАНИЛКА СОСТОЯНИЙ ===
+// === LOCAL STORE (мок до интеграции) ===
 const store = {
   ready: 0,
   pending: 0,
@@ -79,7 +94,7 @@ const store = {
   cookAwaitingCustomQty: false
 };
 
-// === МЕНЮ ===
+// === MENUS ===
 const cashierMenu = {
   reply_markup: {
     keyboard: [
@@ -124,7 +139,7 @@ bot.onText(/\/start/, (msg) => {
   else bot.sendMessage(id, "У вас нет доступа.");
 });
 
-// === DEBUG: получить ID точек и продуктов ===
+// === /debug_iiko ===
 bot.onText(/\/debug_iiko/, async (msg) => {
   const id = msg.chat.id;
   if (id !== CASHIER) return bot.sendMessage(id, "Нет доступа.");
@@ -147,7 +162,7 @@ bot.onText(/\/debug_iiko/, async (msg) => {
   bot.sendMessage(id, storeList + prodList, { parse_mode: "Markdown" });
 });
 
-// === ОСНОВНАЯ ЛОГИКА ===
+// === MAIN LOGIC ===
 bot.on("message", (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
@@ -156,6 +171,7 @@ bot.on("message", (msg) => {
 
   // ----- КАССИР -----
   if (id === CASHIER) {
+
     if (text === "🍳 Приготовить пирожки") {
       bot.sendMessage(id, "Выберите количество:", quantityMenu);
       return;
@@ -234,7 +250,7 @@ bot.on("message", (msg) => {
     }
   }
 
-  // ----- ПОВАР ВВОДИТ СВОЁ КОЛ-ВО -----
+  // ----- ПОВАР -----
   if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
     const qty = Number(text);
 
@@ -249,7 +265,7 @@ bot.on("message", (msg) => {
   }
 });
 
-// === КНОПКИ ПОВАРА ===
+// === CALLBACKS ===
 bot.on("callback_query", (query) => {
   const id = query.message.chat.id;
   const action = query.data;
@@ -275,7 +291,7 @@ bot.on("callback_query", (query) => {
   bot.answerCallbackQuery(query.id);
 });
 
-// === EXPRESS KEEPALIVE ===
+// === KEEPALIVE ===
 const app = express();
 const PORT = process.env.PORT || 3000;
 
