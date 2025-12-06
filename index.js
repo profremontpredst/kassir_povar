@@ -3,37 +3,42 @@ import express from "express";
 import fetch from "node-fetch";
 
 // === IIKO CONFIG ===
-const IIKO_HOST = "https://db-co.iiko.it/resto/api"; 
-const IIKO_LOGIN = "xxxppp";
+const IIKO_HOST = "https://db-co.iiko.it/resto/api";
+const IIKO_LOGIN = "xxxppp"; 
 const IIKO_PASSWORD = "96321";
 
 let IIKO_SESSION = null;
 
-// === IIKO AUTH ===
+// === IIKO AUTH (правильная!) ===
 async function iikoAuth() {
   try {
+    const params = new URLSearchParams();
+    params.append("login", IIKO_LOGIN);
+    params.append("password", IIKO_PASSWORD);
+
     const res = await fetch(`${IIKO_HOST}/auth`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        login: IIKO_LOGIN,
-        password: IIKO_PASSWORD
-      })
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded"
+      },
+      body: params
     });
 
     const sessionKey = await res.text();
 
-    if (!sessionKey || sessionKey.length < 10) {
-      console.error("AUTH FAILED:", sessionKey);
+    console.log("AUTH RAW RESPONSE:", sessionKey);
+
+    if (!sessionKey || sessionKey.length < 5 || sessionKey.includes("Exception")) {
+      console.error("❌ AUTH FAILED:", sessionKey);
       return null;
     }
 
-    IIKO_SESSION = sessionKey;
-    console.log("IIKO SESSION:", sessionKey);
-    return sessionKey;
+    IIKO_SESSION = sessionKey.trim();
+    console.log("✅ IIKO SESSION OK:", IIKO_SESSION);
+    return IIKO_SESSION;
 
   } catch (err) {
-    console.error("AUTH ERROR:", err);
+    console.error("❌ AUTH ERROR:", err);
     return null;
   }
 }
@@ -47,7 +52,7 @@ async function getStores() {
   }
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
-    headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
+    headers: { Cookie: `iiko_session=${IIKO_SESSION};` }
   });
 
   console.log("STORES STATUS:", res.status);
@@ -66,7 +71,7 @@ async function getProducts() {
   }
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
-    headers: { Cookie: `iiko_session=${IIKO_SESSION}` }
+    headers: { Cookie: `iiko_session=${IIKO_SESSION};` }
   });
 
   console.log("PRODUCTS STATUS:", res.status);
@@ -85,7 +90,7 @@ const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const CASHIER = Number(process.env.CASHIER_CHAT_ID);
 const COOK = Number(process.env.COOK_CHAT_ID);
 
-// === LOCAL STORE (мок до интеграции) ===
+// === LOCAL STORE (мок) ===
 const store = {
   ready: 0,
   pending: 0,
@@ -167,11 +172,10 @@ bot.on("message", (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
 
-  console.log("CHAT ID:", msg.chat.id);
+  console.log("CHAT ID:", id);
 
-  // ----- КАССИР -----
+  // КАССИР
   if (id === CASHIER) {
-
     if (text === "🍳 Приготовить пирожки") {
       bot.sendMessage(id, "Выберите количество:", quantityMenu);
       return;
@@ -250,7 +254,7 @@ bot.on("message", (msg) => {
     }
   }
 
-  // ----- ПОВАР -----
+  // ПОВАР
   if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
     const qty = Number(text);
 
@@ -274,6 +278,7 @@ bot.on("callback_query", (query) => {
 
   if (action === "cook_done") {
     const qty = store.lastRequestQty;
+
     store.ready += qty;
     store.pending = 0;
 
