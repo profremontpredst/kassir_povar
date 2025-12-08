@@ -5,7 +5,6 @@ import fetch from "node-fetch";
 const TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TOKEN}`;
 
-// chat id кассира и повара из переменных окружения
 const CASHIER = Number(process.env.CASHIER_CHAT_ID || 0);
 const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
@@ -16,24 +15,34 @@ const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518";
 
 let IIKO_SESSION = null;
 
-// --- авторизация в iiko ---
+// --- авторизация в iiko (через x-www-form-urlencoded body) ---
 async function iikoAuth() {
   try {
-    const url = `${IIKO_HOST}/auth?login=${IIKO_LOGIN}&pass=${IIKO_PASS_SHA1}`;
-    const res = await fetch(url, { method: "POST" });
-    const token = (await res.text()).trim();
+    const body = new URLSearchParams();
+    body.append("login", IIKO_LOGIN);
+    body.append("pass", IIKO_PASS_SHA1);
 
+    const res = await fetch(`${IIKO_HOST}/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body
+    });
+
+    const token = (await res.text()).trim();
     console.log("IIKO AUTH RAW:", token);
 
-    if (!token || token.length < 10 || token.includes("Exception")) {
+    if (!token || token.length < 10 || token.includes("Exception") || token.includes("hash")) {
       console.error("IIKO AUTH FAIL");
+      IIKO_SESSION = null;
       return null;
     }
 
     IIKO_SESSION = token;
+    console.log("IIKO SESSION OK:", IIKO_SESSION);
     return token;
   } catch (e) {
     console.error("IIKO AUTH ERROR:", e);
+    IIKO_SESSION = null;
     return null;
   }
 }
@@ -45,6 +54,7 @@ async function getStores() {
   const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
     headers: { Cookie: `key=${IIKO_SESSION}` }
   });
+
   const raw = await res.text();
   console.log("STORES RAW:", raw);
 
@@ -62,6 +72,7 @@ async function getProducts() {
   const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
     headers: { Cookie: `key=${IIKO_SESSION}` }
   });
+
   const raw = await res.text();
   console.log("PRODUCTS RAW:", raw);
 
@@ -85,10 +96,8 @@ const store = {
 const app = express();
 app.use(express.json());
 
-// просто чтобы Render показывал "живой" сервис
 app.get("/", (req, res) => res.send("OK"));
 
-// сюда Telegram будет слать апдейты
 app.post("/webhook", async (req, res) => {
   const update = req.body;
   console.log("UPDATE:", JSON.stringify(update));
@@ -303,7 +312,6 @@ async function handleCallback(query) {
     await sendMessage(COOK, "Введите количество:");
   }
 
-  // ответ Telegram, чтобы не висел "часик"
   await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
