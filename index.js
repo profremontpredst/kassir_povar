@@ -5,36 +5,28 @@ import fetch from "node-fetch";
 // === IIKO CONFIG ===
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
 const IIKO_LOGIN = "xxxppp"; 
-const IIKO_PASSWORD = "96321";
+const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518"; // ← твой SHA1 хеш
 
 let IIKO_SESSION = null;
 
-// === IIKO AUTH (правильная!) ===
+// === AUTH ===
 async function iikoAuth() {
   try {
-    const params = new URLSearchParams();
-    params.append("login", IIKO_LOGIN);
-    params.append("password", IIKO_PASSWORD);
+    const url = `${IIKO_HOST}/auth?login=${IIKO_LOGIN}&pass=${IIKO_PASS_SHA1}`;
 
-    const res = await fetch(`${IIKO_HOST}/auth`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded"
-      },
-      body: params
-    });
+    const res = await fetch(url, { method: "POST" });
+    const token = await res.text();
 
-    const sessionKey = await res.text();
+    console.log("AUTH RAW:", token);
 
-    console.log("AUTH RAW RESPONSE:", sessionKey);
-
-    if (!sessionKey || sessionKey.length < 5 || sessionKey.includes("Exception")) {
-      console.error("❌ AUTH FAILED:", sessionKey);
+    if (!token || token.includes("Exception") || token.length < 10) {
+      console.error("❌ AUTH FAILED:", token);
       return null;
     }
 
-    IIKO_SESSION = sessionKey.trim();
-    console.log("✅ IIKO SESSION OK:", IIKO_SESSION);
+    IIKO_SESSION = token.trim();
+    console.log("✅ AUTH OK — SESSION:", IIKO_SESSION);
+
     return IIKO_SESSION;
 
   } catch (err) {
@@ -45,52 +37,54 @@ async function iikoAuth() {
 
 // === GET STORES ===
 async function getStores() {
-  if (!IIKO_SESSION) {
-    console.log("⚠️ Нет SESSION — пробую авторизацию...");
-    await iikoAuth();
-    console.log("SESSION после авторизации:", IIKO_SESSION);
-  }
+  if (!IIKO_SESSION) await iikoAuth();
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
-    headers: { Cookie: `iiko_session=${IIKO_SESSION};` }
+    headers: {
+      Cookie: `key=${IIKO_SESSION};`
+    }
   });
 
-  console.log("STORES STATUS:", res.status);
   const raw = await res.text();
   console.log("STORES RAW:", raw);
 
-  return []; // временно
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
 }
 
 // === GET PRODUCTS ===
 async function getProducts() {
-  if (!IIKO_SESSION) {
-    console.log("⚠️ Нет SESSION — пробую авторизацию...");
-    await iikoAuth();
-    console.log("SESSION после авторизации:", IIKO_SESSION);
-  }
+  if (!IIKO_SESSION) await iikoAuth();
 
   const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
-    headers: { Cookie: `iiko_session=${IIKO_SESSION};` }
+    headers: {
+      Cookie: `key=${IIKO_SESSION};`
+    }
   });
 
-  console.log("PRODUCTS STATUS:", res.status);
   const raw = await res.text();
   console.log("PRODUCTS RAW:", raw);
 
-  return []; // временно
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return [];
+  }
 }
 
-// === BOT INIT ===
+// === BOT ===
 console.log("INDEX.JS LOADED");
 console.log("BOT TOKEN:", process.env.BOT_TOKEN);
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-const CASHIER = Number(process.env.CASHIER_CHAT_ID);
+const CASHIER = Number(process.env.CASHIER_CHAT_ID); 
 const COOK = Number(process.env.COOK_CHAT_ID);
 
-// === LOCAL STORE (мок) ===
+// === LOCAL STORE MOCK ===
 const store = {
   ready: 0,
   pending: 0,
@@ -122,12 +116,12 @@ const quantityMenu = {
   }
 };
 
-// === АНТИШТРАФ ===
+// === ANTI-SHIT ===
 function antiShtrafCheck() {
   if (store.ready + store.pending < 10) {
     bot.sendMessage(
       CASHIER,
-      "⚠️ Критически мало пирожков (<10)! Риск отключения Яндекса.",
+      "⚠️ Мало пирожков, <10! Риск от Яндекса.",
       { parse_mode: "Markdown" }
     );
   }
@@ -141,38 +135,31 @@ bot.onText(/\/start/, (msg) => {
 
   if (id === CASHIER) bot.sendMessage(id, "Готов к работе, кассир 👩‍💼", cashierMenu);
   else if (id === COOK) bot.sendMessage(id, "Готов к работе, повар 👨‍🍳");
-  else bot.sendMessage(id, "У вас нет доступа.");
+  else bot.sendMessage(id, "Нет доступа.");
 });
 
-// === /debug_iiko ===
+// === DEBUG: STORES + PRODUCTS ===
 bot.onText(/\/debug_iiko/, async (msg) => {
-  const id = msg.chat.id;
-  if (id !== CASHIER) return bot.sendMessage(id, "Нет доступа.");
+  if (msg.chat.id !== CASHIER) return bot.sendMessage(msg.chat.id, "Нет доступа.");
 
-  bot.sendMessage(id, "Получаю данные из iiko...");
+  bot.sendMessage(msg.chat.id, "Получаю данные...");
 
   const stores = await getStores();
   const products = await getProducts();
 
-  let storeList = "📍 *Точки / Stores:*\n";
-  stores.forEach((s) => {
-    storeList += `• ${s.name} — \`${s.id}\`\n`;
-  });
+  let text = "📍 *Точки:*\n";
+  stores.forEach((s) => (text += `• ${s.name} — \`${s.id}\`\n`));
 
-  let prodList = "\n🍞 *Продукты:*\n";
-  products.slice(0, 20).forEach((p) => {
-    prodList += `• ${p.name} — \`${p.id}\`\n`;
-  });
+  text += "\n🍞 *Продукты:*\n";
+  products.slice(0, 20).forEach((p) => (text += `• ${p.name} — \`${p.id}\`\n`));
 
-  bot.sendMessage(id, storeList + prodList, { parse_mode: "Markdown" });
+  bot.sendMessage(msg.chat.id, text, { parse_mode: "Markdown" });
 });
 
 // === MAIN LOGIC ===
 bot.on("message", (msg) => {
   const id = msg.chat.id;
   const text = msg.text;
-
-  console.log("CHAT ID:", id);
 
   // КАССИР
   if (id === CASHIER) {
@@ -207,8 +194,8 @@ bot.on("message", (msg) => {
     }
 
     if (text === "Ввести своё количество") {
-      bot.sendMessage(id, "Введите число пирожков:");
       store.awaitCustomQty = true;
+      bot.sendMessage(id, "Введите число пирожков:");
       return;
     }
 
@@ -247,14 +234,9 @@ bot.on("message", (msg) => {
       );
       return;
     }
-
-    if (text === "⬅️ Назад") {
-      bot.sendMessage(id, "Меню кассира:", cashierMenu);
-      return;
-    }
   }
 
-  // ПОВАР
+  // ПОВАР ВВОДИТ СВОЁ КОЛ-ВО
   if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
     const qty = Number(text);
 
@@ -269,12 +251,11 @@ bot.on("message", (msg) => {
   }
 });
 
-// === CALLBACKS ===
+// === ПОВАР ЖМЕТ КНОПКИ ===
 bot.on("callback_query", (query) => {
-  const id = query.message.chat.id;
-  const action = query.data;
+  if (query.message.chat.id !== COOK) return;
 
-  if (id !== COOK) return;
+  const action = query.data;
 
   if (action === "cook_done") {
     const qty = store.lastRequestQty;
@@ -282,7 +263,7 @@ bot.on("callback_query", (query) => {
     store.ready += qty;
     store.pending = 0;
 
-    bot.sendMessage(id, `Готово! *${qty} шт.*`, { parse_mode: "Markdown" });
+    bot.sendMessage(COOK, `Готово! *${qty} шт.*`, { parse_mode: "Markdown" });
     bot.sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, { parse_mode: "Markdown" });
 
     antiShtrafCheck();
@@ -290,13 +271,13 @@ bot.on("callback_query", (query) => {
 
   if (action === "cook_other") {
     store.cookAwaitingCustomQty = true;
-    bot.sendMessage(id, "Введите количество:");
+    bot.sendMessage(COOK, "Введите количество:");
   }
 
   bot.answerCallbackQuery(query.id);
 });
 
-// === KEEPALIVE ===
+// === EXPRESS KEEPALIVE ===
 const app = express();
 const PORT = process.env.PORT || 3000;
 
