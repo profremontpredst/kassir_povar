@@ -10,12 +10,12 @@ const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
 // ================== IIKO CONFIG ==================
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
-const IIKO_LOGIN = "xxxppp";
-const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518";
+const IIKO_LOGIN = "xxxppp"; // логин
+const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518"; // SHA1 из PowerShell
 
 let IIKO_SESSION = null;
 
-// --- авторизация в iiko (через x-www-form-urlencoded body) ---
+// --- авторизация в iiko ---
 async function iikoAuth() {
   try {
     const body = new URLSearchParams();
@@ -25,15 +25,14 @@ async function iikoAuth() {
     const res = await fetch(`${IIKO_HOST}/auth`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body
+      body: body.toString()
     });
 
     const token = (await res.text()).trim();
     console.log("IIKO AUTH RAW:", token);
 
-    if (!token || token.length < 10 || token.includes("Exception") || token.includes("hash")) {
+    if (!token || token.length < 10 || token.includes("Exception")) {
       console.error("IIKO AUTH FAIL");
-      IIKO_SESSION = null;
       return null;
     }
 
@@ -42,7 +41,6 @@ async function iikoAuth() {
     return token;
   } catch (e) {
     console.error("IIKO AUTH ERROR:", e);
-    IIKO_SESSION = null;
     return null;
   }
 }
@@ -96,8 +94,10 @@ const store = {
 const app = express();
 app.use(express.json());
 
+// healthcheck
 app.get("/", (req, res) => res.send("OK"));
 
+// webhook от Telegram
 app.post("/webhook", async (req, res) => {
   const update = req.body;
   console.log("UPDATE:", JSON.stringify(update));
@@ -162,7 +162,7 @@ async function handleMessage(msg) {
 
   console.log("CHAT:", id, text);
 
-  // --- команды ---
+  // команды
   if (text === "/start") {
     if (id === CASHIER) {
       return sendMessage(id, "Готов к работе, кассир 👩‍💼", cashierMenu);
@@ -189,10 +189,12 @@ async function handleMessage(msg) {
       out += `• ${p.name} — \`${p.id}\`\n`;
     });
 
-    return sendMessage(id, out || "Пусто", { parse_mode: "Markdown" });
+    if (!stores.length && !products.length) out += "\n(пусто или нет доступа)";
+
+    return sendMessage(id, out, { parse_mode: "Markdown" });
   }
 
-  // --- кассир ---
+  // кассир
   if (id === CASHIER) {
     if (text === "🍳 Приготовить пирожки") {
       return sendMessage(id, "Выберите количество:", quantityMenu);
@@ -275,7 +277,7 @@ async function handleMessage(msg) {
     }
   }
 
-  // --- повар вводит своё количество ---
+  // повар вводит своё количество
   if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
     const qty = Number(text);
 
