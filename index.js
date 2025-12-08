@@ -15,7 +15,7 @@ const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518"; // SHA1 из 
 
 let IIKO_SESSION = null;
 
-// --- авторизация в iiko ---
+// ---------- IIKO AUTH ----------
 async function iikoAuth() {
   try {
     const body = new URLSearchParams();
@@ -28,11 +28,21 @@ async function iikoAuth() {
       body: body.toString()
     });
 
-    const token = (await res.text()).trim();
-    console.log("IIKO AUTH RAW:", token);
+    const raw = (await res.text()).trim();
+    console.log("IIKO AUTH RAW:", raw);
 
-    if (!token || token.length < 10 || token.includes("Exception")) {
-      console.error("IIKO AUTH FAIL");
+    // чистим кавычки, если вдруг есть
+    const token = raw.replace(/"/g, "").trim();
+
+    // ЖЁСТКАЯ ПРОВЕРКА: токен должен быть без русских букв, без пробелов и ошибок
+    if (
+      !token ||
+      token.length < 8 ||
+      /пароль|password|error|exception|ошибка/i.test(token) ||
+      /[^\w-]/.test(token) // только a-zA-Z0-9_-
+    ) {
+      console.error("IIKO AUTH FAIL, GOT:", raw);
+      IIKO_SESSION = null;
       return null;
     }
 
@@ -41,42 +51,72 @@ async function iikoAuth() {
     return token;
   } catch (e) {
     console.error("IIKO AUTH ERROR:", e);
+    IIKO_SESSION = null;
     return null;
   }
 }
 
+async function ensureIikoSession() {
+  if (IIKO_SESSION) return true;
+  const token = await iikoAuth();
+  return !!token;
+}
+
 async function getStores() {
-  if (!IIKO_SESSION) await iikoAuth();
-  if (!IIKO_SESSION) return [];
-
-  const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
-    headers: { Cookie: `key=${IIKO_SESSION}` }
-  });
-
-  const raw = await res.text();
-  console.log("STORES RAW:", raw);
+  const ok = await ensureIikoSession();
+  if (!ok) {
+    console.error("getStores: NO IIKO SESSION");
+    return [];
+  }
 
   try {
-    return JSON.parse(raw);
-  } catch {
+    const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
+      headers: {
+        // Куки только ASCII: кодируем сам токен
+        Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
+      }
+    });
+
+    const raw = await res.text();
+    console.log("STORES RAW:", raw);
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error("STORES PARSE ERROR");
+      return [];
+    }
+  } catch (e) {
+    console.error("getStores ERROR:", e);
     return [];
   }
 }
 
 async function getProducts() {
-  if (!IIKO_SESSION) await iikoAuth();
-  if (!IIKO_SESSION) return [];
-
-  const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
-    headers: { Cookie: `key=${IIKO_SESSION}` }
-  });
-
-  const raw = await res.text();
-  console.log("PRODUCTS RAW:", raw);
+  const ok = await ensureIikoSession();
+  if (!ok) {
+    console.error("getProducts: NO IIKO SESSION");
+    return [];
+  }
 
   try {
-    return JSON.parse(raw);
-  } catch {
+    const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
+      headers: {
+        Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
+      }
+    });
+
+    const raw = await res.text();
+    console.log("PRODUCTS RAW:", raw);
+
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error("PRODUCTS PARSE ERROR");
+      return [];
+    }
+  } catch (e) {
+    console.error("getProducts ERROR:", e);
     return [];
   }
 }
@@ -102,10 +142,14 @@ app.post("/webhook", async (req, res) => {
   const update = req.body;
   console.log("UPDATE:", JSON.stringify(update));
 
-  if (update.message) {
-    await handleMessage(update.message);
-  } else if (update.callback_query) {
-    await handleCallback(update.callback_query);
+  try {
+    if (update.message) {
+      await handleMessage(update.message);
+    } else if (update.callback_query) {
+      await handleCallback(update.callback_query);
+    }
+  } catch (e) {
+    console.error("HANDLE UPDATE ERROR:", e);
   }
 
   res.sendStatus(200);
@@ -173,11 +217,20 @@ async function handleMessage(msg) {
     return sendMessage(id, "Нет доступа.");
   }
 
+  // DEBUG IIKO
   if (text === "/debug_iiko" && id === CASHIER) {
     await sendMessage(id, "Получаю данные из iiko...");
 
     const stores = await getStores();
     const products = await getProducts();
+
+    if (!stores.length && !products.length) {
+      return sendMessage(
+        id,
+        "❌ Не удалось получить данные из iiko.\n" +
+          "Скорее всего, неверный логин/пароль или нет доступа к API."
+      );
+    }
 
     let out = "📍 *Точки:*\n";
     stores.forEach((s) => {
@@ -188,8 +241,6 @@ async function handleMessage(msg) {
     products.slice(0, 20).forEach((p) => {
       out += `• ${p.name} — \`${p.id}\`\n`;
     });
-
-    if (!stores.length && !products.length) out += "\n(пусто или нет доступа)";
 
     return sendMessage(id, out, { parse_mode: "Markdown" });
   }
@@ -205,11 +256,9 @@ async function handleMessage(msg) {
       store.pending = qty;
       store.lastRequestQty = qty;
 
-      await sendMessage(
-        id,
-        `Заявка отправлена: *${qty} шт.*`,
-        { parse_mode: "Markdown" }
-      );
+      await sendMessage(id, `Заявка отправлена: *${qty} шт.*`, {
+        parse_mode: "Markdown"
+      });
 
       if (COOK) {
         await sendMessage(
@@ -242,11 +291,9 @@ async function handleMessage(msg) {
       store.pending = qty;
       store.lastRequestQty = qty;
 
-      await sendMessage(
-        id,
-        `Заявка отправлена: *${qty} шт.*`,
-        { parse_mode: "Markdown" }
-      );
+      await sendMessage(id, `Заявка отправлена: *${qty} шт.*`, {
+        parse_mode: "Markdown"
+      });
 
       if (COOK) {
         await sendMessage(
@@ -285,8 +332,12 @@ async function handleMessage(msg) {
     store.pending = 0;
     store.cookAwaitingCustomQty = false;
 
-    await sendMessage(COOK, `Принято: *${qty} шт.*`, { parse_mode: "Markdown" });
-    await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, { parse_mode: "Markdown" });
+    await sendMessage(COOK, `Принято: *${qty} шт.*`, {
+      parse_mode: "Markdown"
+    });
+    await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, {
+      parse_mode: "Markdown"
+    });
 
     antiShtrafCheck();
   }
@@ -303,8 +354,12 @@ async function handleCallback(query) {
     store.ready += qty;
     store.pending = 0;
 
-    await sendMessage(COOK, `Готово! *${qty} шт.*`, { parse_mode: "Markdown" });
-    await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, { parse_mode: "Markdown" });
+    await sendMessage(COOK, `Готово! *${qty} шт.*`, {
+      parse_mode: "Markdown"
+    });
+    await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, {
+      parse_mode: "Markdown"
+    });
 
     antiShtrafCheck();
   }
@@ -314,11 +369,15 @@ async function handleCallback(query) {
     await sendMessage(COOK, "Введите количество:");
   }
 
-  await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: query.id })
-  });
+  try {
+    await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: query.id })
+    });
+  } catch (e) {
+    console.error("ANSWER CALLBACK ERROR:", e);
+  }
 }
 
 // ================== START SERVER ==================
