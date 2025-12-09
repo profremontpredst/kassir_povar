@@ -11,7 +11,7 @@ const COOK = Number(process.env.COOK_CHAT_ID || 0);
 // ================== IIKO CONFIG ==================
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
 const IIKO_LOGIN = "xxxppp"; // логин
-const IIKO_PASS_SHA1 = "C41B5A68CADA444E2CBDC4DA79548A18422F2518"; // SHA1 из PowerShell
+const IIKO_PASS_SHA1 = "72C5A5AC08F9D59E333B74F41E4FCED5C7B983F7"; // SHA1 из PowerShell
 
 let IIKO_SESSION = null;
 
