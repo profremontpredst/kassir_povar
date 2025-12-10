@@ -64,6 +64,19 @@ async function getStores() {
     const raw = await res.text();
     console.log("STORES RAW:", raw);
 
+    // если сервер не знает этот метод — просто забиваем
+    if (raw.startsWith("HTTP 404")) {
+      console.error("STORES: endpoint not found, skip");
+      return [];
+    }
+
+    // если токен протух — чистим сессию и больше не трогаем точки
+    if (/Token is expired or invalid/i.test(raw)) {
+      console.error("STORES: token expired");
+      IIKO_SESSION = null;
+      return [];
+    }
+
     try {
       return JSON.parse(raw);
     } catch {
@@ -77,6 +90,7 @@ async function getStores() {
 }
 
 async function getProducts() {
+  // всегда пытаемся убедиться, что есть свежая сессия
   const ok = await ensureIikoSession();
   if (!ok) {
     console.error("getProducts: NO IIKO SESSION");
@@ -88,8 +102,27 @@ async function getProducts() {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
 
-    const raw = await res.text();
+    let raw = await res.text();
     console.log("PRODUCTS RAW:", raw);
+
+    // токен протух → пробуем один раз перелогиниться и повторить запрос
+    if (/Token is expired or invalid/i.test(raw)) {
+      console.error("PRODUCTS: token expired, reauth...");
+      IIKO_SESSION = null;
+
+      const ok2 = await ensureIikoSession();
+      if (!ok2) {
+        console.error("PRODUCTS: reauth failed");
+        return [];
+      }
+
+      const res2 = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
+        headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
+      });
+
+      raw = await res2.text();
+      console.log("PRODUCTS RAW RETRY:", raw);
+    }
 
     try {
       return JSON.parse(raw);
