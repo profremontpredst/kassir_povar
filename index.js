@@ -200,34 +200,6 @@ function antiShtrafCheck() {
   }
 }
 
-// ===== TEST ORGANIZATIONS (CLOUD API) =====
-if (text === "/debug_orgs" && id === CASHIER) {
-  await sendMessage(id, "Проверяю организации /api/1/organizations/list...");
-
-  const res = await fetch(${IIKO_HOST.replace("/resto/api","")}/api/1/organizations/list, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: key=${encodeURIComponent(IIKO_SESSION)}
-    },
-    body: JSON.stringify({ includeDisabled: false })
-  });
-
-  const raw = await res.text();
-  console.log("ORGS RAW:", raw);
-
-  try {
-    const orgs = JSON.parse(raw);
-    let out = "🏪 *Организации / точки:*\n\n";
-    orgs.organizations.forEach(o => {
-      out += • ${o.name} — \${o.id}\\n;
-    });
-    return sendMessage(id, out, { parse_mode: "Markdown" });
-  } catch {
-    return sendMessage(id, "❌ Не смог распарсить ответ:\n" + raw);
-  }
-}
-
 // ================== ЛОГИКА handleMessage ==================
 async function handleMessage(msg) {
   const id = msg.chat.id;
@@ -243,6 +215,37 @@ async function handleMessage(msg) {
       return sendMessage(id, "Готов к работе, повар 👨‍🍳");
     }
     return sendMessage(id, "Нет доступа.");
+  }
+
+  // ===== TEST ORGANIZATIONS (CLOUD API) =====
+  if (text === "/debug_orgs" && id === CASHIER) {
+    await sendMessage(id, "Проверяю организации /api/1/organizations/list...");
+    
+    const cloudHost = IIKO_HOST.replace("/resto/api", "");
+    const url = `${cloudHost}/api/1/organizations/list`;
+    
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Cookie": `key=${encodeURIComponent(IIKO_SESSION)}`
+      },
+      body: JSON.stringify({ includeDisabled: false })
+    });
+
+    const raw = await res.text();
+    console.log("ORGS RAW:", raw);
+
+    try {
+      const orgs = JSON.parse(raw);
+      let out = "🏪 *Организации / точки:*\n\n";
+      orgs.organizations.forEach(o => {
+        out += `• ${o.name} — \`${o.id}\`\n`;
+      });
+      return sendMessage(id, out, { parse_mode: "Markdown" });
+    } catch {
+      return sendMessage(id, "❌ Не смог распарсить ответ:\n" + raw);
+    }
   }
 
   if (text === "/debug_iiko" && id === CASHIER) {
