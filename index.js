@@ -10,10 +10,12 @@ const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
 // ================== IIKO CONFIG ==================
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
+const IIKO_CLOUD_HOST = "https://db-co.iiko.it/api";
 const IIKO_LOGIN = "xxxppp";
 const IIKO_PASS_SHA1 = "72c5a5ac08f9d59e333b74f41e4fced5c7b983f7";
 
 let IIKO_SESSION = null;
+let IIKO_AUTH_TOKEN = null;
 
 // ---------- IIKO AUTH ----------
 async function iikoAuth() {
@@ -49,33 +51,105 @@ async function ensureIikoSession() {
   return !!token;
 }
 
-async function getStores() {
-  const ok = await ensureIikoSession();
-  if (!ok) return [];
-
+// ---------- IIKO CLOUD AUTH ----------
+async function iikoCloudAuth() {
   try {
-    const res = await fetch(`${IIKO_HOST}/1/organizations`, {
+    const url = `${IIKO_CLOUD_HOST}/auth/access_token`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        apiLogin: IIKO_LOGIN
+      })
+    });
+
+    if (!res.ok) {
+      console.error("CLOUD AUTH FAILED:", res.status, res.statusText);
+      return null;
+    }
+
+    const data = await res.json();
+    console.log("CLOUD AUTH RESPONSE:", data);
+    
+    if (data.token) {
+      IIKO_AUTH_TOKEN = data.token;
+      return data.token;
+    }
+    
+    return null;
+  } catch (e) {
+    console.error("CLOUD AUTH ERROR:", e);
+    return null;
+  }
+}
+
+async function ensureIikoCloudAuth() {
+  if (IIKO_AUTH_TOKEN) return true;
+  const token = await iikoCloudAuth();
+  return !!token;
+}
+
+// ---------- GET ORGANIZATIONS ----------
+async function getOrganizations() {
+  try {
+    const ok = await ensureIikoCloudAuth();
+    if (!ok) {
+      console.error("No cloud auth token");
+      return [];
+    }
+
+    const res = await fetch(`${IIKO_CLOUD_HOST}/1/organizations`, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${IIKO_AUTH_TOKEN}`
+      }
+    });
+
+    if (!res.ok) {
+      console.error("ORGANIZATIONS ERROR:", res.status, res.statusText);
+      return [];
+    }
+
+    const data = await res.json();
+    console.log("ORGANIZATIONS DATA:", data);
+    return data.organizations || data || [];
+
+  } catch (e) {
+    console.error("GET ORGANIZATIONS ERROR:", e);
+    return [];
+  }
+}
+
+// ---------- GET DEPARTMENTS ----------
+async function getDepartments(organizationId) {
+  try {
+    const ok = await ensureIikoSession();
+    if (!ok) return [];
+
+    const res = await fetch(`${IIKO_HOST}/departments?organization=${organizationId}`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
 
     const raw = await res.text();
-    console.log("ORGANIZATIONS RAW:", raw);
+    console.log("DEPARTMENTS RAW:", raw);
 
     try {
       return JSON.parse(raw);
     } catch {
-      console.error("ORGANIZATIONS PARSE ERROR");
+      console.error("DEPARTMENTS PARSE ERROR");
       return [];
     }
 
   } catch (e) {
-    console.error("getStores ERROR:", e);
+    console.error("GET DEPARTMENTS ERROR:", e);
     return [];
   }
 }
 
 async function getProducts() {
-  // всегда пытаемся убедиться, что есть свежая сессия
   const ok = await ensureIikoSession();
   if (!ok) {
     console.error("getProducts: NO IIKO SESSION");
@@ -88,9 +162,7 @@ async function getProducts() {
     });
 
     let raw = await res.text();
-    console.log("PRODUCTS RAW:", raw);
 
-    // токен протух → пробуем один раз перелогиниться и повторить запрос
     if (/Token is expired or invalid/i.test(raw)) {
       console.error("PRODUCTS: token expired, reauth...");
       IIKO_SESSION = null;
@@ -106,7 +178,6 @@ async function getProducts() {
       });
 
       raw = await res2.text();
-      console.log("PRODUCTS RAW RETRY:", raw);
     }
 
     try {
@@ -217,57 +288,69 @@ async function handleMessage(msg) {
     return sendMessage(id, "Нет доступа.");
   }
 
-  // ===== TEST ORGANIZATIONS (CLOUD API) =====
-  if (text === "/debug_orgs" && id === CASHIER) {
-    await sendMessage(id, "Проверяю организации /api/1/organizations/list...");
+  // НОВАЯ КОМАНДА ДЛЯ ТОЧЕК
+  if (text === "/debug_stores" && id === CASHIER) {
+    await sendMessage(id, "Получаю организации и точки...");
     
-    const cloudHost = IIKO_HOST.replace("/resto/api", "");
-    const url = `${cloudHost}/api/1/organizations/list`;
-    
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Cookie": `key=${encodeURIComponent(IIKO_SESSION)}`
-      },
-      body: JSON.stringify({ includeDisabled: false })
-    });
-
-    const raw = await res.text();
-    console.log("ORGS RAW:", raw);
-
     try {
-      const orgs = JSON.parse(raw);
-      let out = "🏪 *Организации / точки:*\n\n";
-      orgs.organizations.forEach(o => {
-        out += `• ${o.name} — \`${o.id}\`\n`;
-      });
-      return sendMessage(id, out, { parse_mode: "Markdown" });
-    } catch {
-      return sendMessage(id, "❌ Не смог распарсить ответ:\n" + raw);
+      const organizations = await getOrganizations();
+      
+      if (!organizations || organizations.length === 0) {
+        return sendMessage(id, "❌ Не удалось получить организации");
+      }
+      
+      let message = "🏪 *Организации и точки:*\n\n";
+      
+      for (const org of organizations.slice(0, 10)) {
+        message += `📋 *${org.name || 'Без названия'}*\n`;
+        message += `ID: \`${org.id || 'нет'}\`\n`;
+        
+        if (org.address) message += `Адрес: ${org.address}\n`;
+        if (org.phone) message += `Телефон: ${org.phone}\n`;
+        
+        // Получаем отделы для этой организации
+        const departments = await getDepartments(org.id);
+        if (departments && departments.length > 0) {
+          message += `\n*Отделы:*\n`;
+          departments.forEach(dept => {
+            message += `• ${dept.name || 'Без названия'}`;
+            if (dept.externalId) message += ` (ID: \`${dept.externalId}\`)`;
+            message += `\n`;
+          });
+        }
+        
+        message += `\n`;
+      }
+      
+      return sendMessage(id, message, { parse_mode: "Markdown" });
+      
+    } catch (error) {
+      console.error("DEBUG_STORES ERROR:", error);
+      return sendMessage(id, `❌ Ошибка: ${error.message}`);
     }
   }
 
   if (text === "/debug_iiko" && id === CASHIER) {
     await sendMessage(id, "Получаю данные из iiko...");
 
-    const stores = await getStores();
+    const organizations = await getOrganizations();
     const products = await getProducts();
 
-    if (!stores.length && !products.length) {
+    if (!organizations.length && !products.length) {
       return sendMessage(
         id,
         "❌ Не удалось получить данные из iiko.\nСкорее всего, неверный логин/пароль или нет доступа к API."
       );
     }
 
-    let out = "📍 *Точки:*\n";
-    stores.forEach((s) => {
-      out += `• ${s.name} — \`${s.id}\`\n`;
+    let out = "📍 *Организации:*\n";
+    organizations.slice(0, 10).forEach((org) => {
+      out += `• ${org.name || 'Без названия'} — \`${org.id || 'нет'}\`\n`;
+      if (org.address) out += `  Адрес: ${org.address}\n`;
     });
 
-    out += "\n🍞 *Продукты:*\n";
-    products.slice(0, 20).forEach((p) => {
+    out += "\n🍞 *Продукты (первые 5):*\n";
+    products.slice(0, 5).forEach((p) => {
       out += `• ${p.name} — \`${p.id}\`\n`;
     });
 
