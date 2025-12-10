@@ -51,31 +51,15 @@ async function ensureIikoSession() {
 
 async function getStores() {
   const ok = await ensureIikoSession();
-  if (!ok) {
-    console.error("getStores: NO IIKO SESSION");
-    return [];
-  }
+  if (!ok) return [];
 
   try {
-    const res = await fetch(`${IIKO_HOST}/v2/entities/stores/list`, {
+    const res = await fetch(`${IIKO_HOST}/workstations`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
 
     const raw = await res.text();
     console.log("STORES RAW:", raw);
-
-    // если сервер не знает этот метод — просто забиваем
-    if (raw.startsWith("HTTP 404")) {
-      console.error("STORES: endpoint not found, skip");
-      return [];
-    }
-
-    // если токен протух — чистим сессию и больше не трогаем точки
-    if (/Token is expired or invalid/i.test(raw)) {
-      console.error("STORES: token expired");
-      IIKO_SESSION = null;
-      return [];
-    }
 
     try {
       return JSON.parse(raw);
@@ -83,6 +67,7 @@ async function getStores() {
       console.error("STORES PARSE ERROR");
       return [];
     }
+
   } catch (e) {
     console.error("getStores ERROR:", e);
     return [];
