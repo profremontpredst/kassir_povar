@@ -54,24 +54,14 @@ async function getStores() {
   if (!ok) return [];
 
   try {
-    const res = await fetch(`${IIKO_HOST}/workstations`, {
+    const res = await fetch(`${IIKO_HOST}/department/list`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
 
     const raw = await res.text();
-    console.log("WORKSTATIONS RAW:", raw);
+    console.log("DEPARTMENTS RAW:", raw);
 
-    if (/Token is expired/i.test(raw)) {
-      IIKO_SESSION = null;
-      return [];
-    }
-
-    try {
-      return JSON.parse(raw);
-    } catch {
-      console.error("WORKSTATIONS PARSE ERROR");
-      return [];
-    }
+    return JSON.parse(raw);
 
   } catch (e) {
     console.error("getStores ERROR:", e);
