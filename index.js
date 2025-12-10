@@ -54,14 +54,19 @@ async function getStores() {
   if (!ok) return [];
 
   try {
-    const res = await fetch(`${IIKO_HOST}/department/list`, {
+    const res = await fetch(`${IIKO_HOST}/1/organizations`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
 
     const raw = await res.text();
-    console.log("DEPARTMENTS RAW:", raw);
+    console.log("ORGANIZATIONS RAW:", raw);
 
-    return JSON.parse(raw);
+    try {
+      return JSON.parse(raw);
+    } catch {
+      console.error("ORGANIZATIONS PARSE ERROR");
+      return [];
+    }
 
   } catch (e) {
     console.error("getStores ERROR:", e);
