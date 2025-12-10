@@ -59,12 +59,17 @@ async function getStores() {
     });
 
     const raw = await res.text();
-    console.log("STORES RAW:", raw);
+    console.log("WORKSTATIONS RAW:", raw);
+
+    if (/Token is expired/i.test(raw)) {
+      IIKO_SESSION = null;
+      return [];
+    }
 
     try {
       return JSON.parse(raw);
     } catch {
-      console.error("STORES PARSE ERROR");
+      console.error("WORKSTATIONS PARSE ERROR");
       return [];
     }
 
