@@ -48,11 +48,36 @@ async function getStores() {
 
   try {
     const res = await fetch(`${IIKO_HOST}/corporation/stores`, {
-      headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
+      headers: { 
+        "Cookie": `key=${encodeURIComponent(IIKO_SESSION)}`,
+        "Accept": "application/json" // ЗАСТАВЛЯЕМ ВЕРНУТЬ JSON
+      }
     });
+    
     const raw = await res.text();
     console.log("STORES RAW:", raw);
     
+    // ЕСЛИ ВСЁ ЕЩЁ XML - ПАРСИМ ЕГО
+    if (raw.startsWith('<?xml')) {
+      const stores = [];
+      const storeMatches = raw.match(/<corporateItemDto>[\s\S]*?<\/corporateItemDto>/g);
+      if (storeMatches) {
+        storeMatches.forEach(item => {
+          const nameMatch = item.match(/<name>([\s\S]*?)<\/name>/);
+          const idMatch = item.match(/<id>([\s\S]*?)<\/id>/);
+          const addressMatch = item.match(/<address>([\s\S]*?)<\/address>/);
+          stores.push({
+            name: nameMatch ? nameMatch[1] : 'Без названия',
+            id: idMatch ? idMatch[1] : '',
+            address: addressMatch ? addressMatch[1] : null
+          });
+        });
+      }
+      console.log("PARSED STORES:", stores);
+      return stores;
+    }
+    
+    // ЕСЛИ JSON - ПАРСИМ КАК ОБЫЧНО
     try {
       const data = JSON.parse(raw);
       return data || [];
@@ -64,71 +89,6 @@ async function getStores() {
     return [];
   }
 }
-
-async function getProducts() {
-  const ok = await ensureIikoSession();
-  if (!ok) {
-    console.error("getProducts: NO IIKO SESSION");
-    return [];
-  }
-
-  try {
-    const res = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
-      headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
-    });
-
-    let raw = await res.text();
-    if (/Token is expired or invalid/i.test(raw)) {
-      console.error("PRODUCTS: token expired, reauth...");
-      IIKO_SESSION = null;
-      const ok2 = await ensureIikoSession();
-      if (!ok2) {
-        console.error("PRODUCTS: reauth failed");
-        return [];
-      }
-      const res2 = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
-        headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
-      });
-      raw = await res2.text();
-    }
-
-    try {
-      return JSON.parse(raw);
-    } catch {
-      console.error("PRODUCTS PARSE ERROR");
-      return [];
-    }
-  } catch (e) {
-    console.error("getProducts ERROR:", e);
-    return [];
-  }
-}
-
-const store = {
-  ready: 0,
-  pending: 0,
-  lastRequestQty: 0,
-  awaitCustomQty: false,
-  cookAwaitingCustomQty: false
-};
-
-const app = express();
-app.use(express.json());
-app.get("/", (req, res) => res.send("OK"));
-app.post("/webhook", async (req, res) => {
-  const update = req.body;
-  console.log("UPDATE:", JSON.stringify(update));
-  try {
-    if (update.message) {
-      await handleMessage(update.message);
-    } else if (update.callback_query) {
-      await handleCallback(update.callback_query);
-    }
-  } catch (e) {
-    console.error("HANDLE UPDATE ERROR:", e);
-  }
-  res.sendStatus(200);
-});
 
 async function sendMessage(chatId, text, extra = {}) {
   try {
