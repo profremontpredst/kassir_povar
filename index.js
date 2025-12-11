@@ -42,23 +42,67 @@ async function ensureIikoSession() {
   return !!token;
 }
 
+// ======== ПАРСЕР XML ДЛЯ /corporation/stores ========
+
+function parseStoresXml(xml) {
+  const result = [];
+  if (!xml || typeof xml !== "string") return result;
+
+  const parts = xml.split("<corporateItemDto>").slice(1); // каждую точку берём отдельно
+
+  for (const part of parts) {
+    const nameMatch = part.match(/<name>([^<]*)<\/name>/);
+    const idMatch = part.match(/<id>([^<]*)<\/id>/);
+    const addrMatch = part.match(/<address>([^<]*)<\/address>/);
+
+    const id = idMatch ? idMatch[1].trim() : "";
+    const name = nameMatch ? nameMatch[1].trim() : "";
+    const address = addrMatch ? addrMatch[1].trim() : "";
+
+    if (id) {
+      result.push({ id, name, address });
+    }
+  }
+
+  return result;
+}
+
+// ======== СПИСОК ТОЧЕК (XML → JS) ========
+
 async function getStores() {
   const ok = await ensureIikoSession();
-  if (!ok) return [];
+  if (!ok) {
+    console.error("getStores: NO IIKO SESSION");
+    return [];
+  }
 
   try {
-    const res = await fetch(`${IIKO_HOST}/corporation/stores`, {
+    let res = await fetch(`${IIKO_HOST}/corporation/stores`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
-    const raw = await res.text();
-    console.log("STORES RAW:", raw);
-    
-    try {
-      const data = JSON.parse(raw);
-      return data || [];
-    } catch {
-      return [];
+
+    let raw = await res.text();
+    console.log("STORES XML RAW (first 500):", raw.slice(0, 500));
+
+    // если вдруг токен протух
+    if (/Token is expired or invalid/i.test(raw)) {
+      console.error("STORES: token expired, reauth...");
+      IIKO_SESSION = null;
+      const ok2 = await ensureIikoSession();
+      if (!ok2) {
+        console.error("STORES: reauth failed");
+        return [];
+      }
+      res = await fetch(`${IIKO_HOST}/corporation/stores`, {
+        headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
+      });
+      raw = await res.text();
+      console.log("STORES XML RAW (after reauth, first 500):", raw.slice(0, 500));
     }
+
+    const stores = parseStoresXml(raw);
+    console.log("STORES PARSED:", stores);
+    return stores;
   } catch (e) {
     console.error("GET STORES ERROR:", e);
     return [];
@@ -196,7 +240,7 @@ async function handleMessage(msg) {
     }
     let message = "🏪 *Точки/Склады:*\n\n";
     stores.forEach(store => {
-      message += `• ${store.name || 'Без названия'}\n`;
+      message += `• ${store.name || "Без названия"}\n`;
       if (store.address) message += `  Адрес: ${store.address}\n`;
       message += `  ID: \`${store.id}\`\n\n`;
     });
