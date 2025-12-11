@@ -208,6 +208,33 @@ function antiShtrafCheck() {
 // ====================== ОСНОВНАЯ ЛОГИКА ===============
 // =======================================================
 
+async function getRealStock(storeId, productId) {
+  const ok = await ensureIikoSession();
+  if (!ok) return null;
+
+  try {
+    const res = await fetch(
+      `${IIKO_HOST}/storage/stock?storeId=${storeId}&productId=${productId}`,
+      {
+        headers: {
+          Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
+        }
+      }
+    );
+
+    const raw = await res.text();
+    console.log("REAL STOCK RAW:", raw);
+
+    const match = raw.match(/<amount>([^<]+)<\/amount>/);
+    if (!match) return null;
+
+    return Number(match[1].trim());
+  } catch (e) {
+    console.error("REAL STOCK ERROR:", e);
+    return null;
+  }
+}
+
 async function handleMessage(msg) {
   const id = msg.chat.id;
   const text = msg.text || "";
@@ -294,12 +321,21 @@ async function handleMessage(msg) {
     }
 
     if (text === "📦 Остатки пирожков") {
+      const storeId = STORE_BY_CASHIER[CASHIER];
+      const productId = PRODUCT_PYROJOK;
+    
+      const stock = await getRealStock(storeId, productId);
+    
+      if (stock === null) {
+        return sendMessage(id, "❌ Не удалось получить остатки из iiko");
+      }
+    
       return sendMessage(
         id,
-        `📦 Остатки:\nГотово: *${store.ready}*\nГотовятся: *${store.pending}*`,
+        `📦 *Реальный остаток в iiko:*\n*${stock} шт.*`,
         { parse_mode: "Markdown" }
       );
-    }
+    }    
   }
 
   // === ПОВАР вводит своё количество ===
