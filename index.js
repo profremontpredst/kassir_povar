@@ -1,33 +1,25 @@
 import express from "express";
 import fetch from "node-fetch";
 
-// ================== TELEGRAM ==================
 const TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TOKEN}`;
-
 const CASHIER = Number(process.env.CASHIER_CHAT_ID || 0);
 const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
-// ================== IIKO CONFIG ==================
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
-const IIKO_CLOUD_HOST = "https://db-co.iiko.it/api";
 const IIKO_LOGIN = "xxxppp";
 const IIKO_PASS_SHA1 = "72c5a5ac08f9d59e333b74f41e4fced5c7b983f7";
 
 let IIKO_SESSION = null;
-let IIKO_AUTH_TOKEN = null;
 
-// ---------- IIKO AUTH ----------
 async function iikoAuth() {
   try {
     const url = `${IIKO_HOST}/auth?login=${IIKO_LOGIN}&pass=${IIKO_PASS_SHA1}`;
     const res = await fetch(url);
     const raw = (await res.text()).trim();
-
     console.log("IIKO AUTH RAW:", raw);
 
     const token = raw.replace(/"/g, "").trim();
-
     if (!token || token.length < 8) {
       console.error("IIKO AUTH FAIL:", raw);
       IIKO_SESSION = null;
@@ -37,7 +29,6 @@ async function iikoAuth() {
     IIKO_SESSION = token;
     console.log("IIKO SESSION OK:", IIKO_SESSION);
     return token;
-
   } catch (e) {
     console.error("IIKO AUTH ERROR:", e);
     IIKO_SESSION = null;
@@ -51,100 +42,25 @@ async function ensureIikoSession() {
   return !!token;
 }
 
-// ---------- IIKO CLOUD AUTH ----------
-async function iikoCloudAuth() {
+async function getStores() {
+  const ok = await ensureIikoSession();
+  if (!ok) return [];
+
   try {
-    const url = `${IIKO_CLOUD_HOST}/auth/access_token`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        apiLogin: IIKO_LOGIN
-      })
-    });
-
-    if (!res.ok) {
-      console.error("CLOUD AUTH FAILED:", res.status, res.statusText);
-      return null;
-    }
-
-    const data = await res.json();
-    console.log("CLOUD AUTH RESPONSE:", data);
-    
-    if (data.token) {
-      IIKO_AUTH_TOKEN = data.token;
-      return data.token;
-    }
-    
-    return null;
-  } catch (e) {
-    console.error("CLOUD AUTH ERROR:", e);
-    return null;
-  }
-}
-
-async function ensureIikoCloudAuth() {
-  if (IIKO_AUTH_TOKEN) return true;
-  const token = await iikoCloudAuth();
-  return !!token;
-}
-
-// ---------- GET ORGANIZATIONS ----------
-async function getOrganizations() {
-  try {
-    const ok = await ensureIikoCloudAuth();
-    if (!ok) {
-      console.error("No cloud auth token");
-      return [];
-    }
-
-    const res = await fetch(`${IIKO_CLOUD_HOST}/1/organizations`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${IIKO_AUTH_TOKEN}`
-      }
-    });
-
-    if (!res.ok) {
-      console.error("ORGANIZATIONS ERROR:", res.status, res.statusText);
-      return [];
-    }
-
-    const data = await res.json();
-    console.log("ORGANIZATIONS DATA:", data);
-    return data.organizations || data || [];
-
-  } catch (e) {
-    console.error("GET ORGANIZATIONS ERROR:", e);
-    return [];
-  }
-}
-
-// ---------- GET DEPARTMENTS ----------
-async function getDepartments(organizationId) {
-  try {
-    const ok = await ensureIikoSession();
-    if (!ok) return [];
-
-    const res = await fetch(`${IIKO_HOST}/departments?organization=${organizationId}`, {
+    const res = await fetch(`${IIKO_HOST}/corporation/stores`, {
       headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
     });
-
     const raw = await res.text();
-    console.log("DEPARTMENTS RAW:", raw);
-
+    console.log("STORES RAW:", raw);
+    
     try {
-      return JSON.parse(raw);
+      const data = JSON.parse(raw);
+      return data || [];
     } catch {
-      console.error("DEPARTMENTS PARSE ERROR");
       return [];
     }
-
   } catch (e) {
-    console.error("GET DEPARTMENTS ERROR:", e);
+    console.error("GET STORES ERROR:", e);
     return [];
   }
 }
@@ -162,21 +78,17 @@ async function getProducts() {
     });
 
     let raw = await res.text();
-
     if (/Token is expired or invalid/i.test(raw)) {
       console.error("PRODUCTS: token expired, reauth...");
       IIKO_SESSION = null;
-
       const ok2 = await ensureIikoSession();
       if (!ok2) {
         console.error("PRODUCTS: reauth failed");
         return [];
       }
-
       const res2 = await fetch(`${IIKO_HOST}/v2/entities/products/list`, {
         headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
       });
-
       raw = await res2.text();
     }
 
@@ -192,7 +104,6 @@ async function getProducts() {
   }
 }
 
-// ================== ВНУТРЕННЕЕ СОСТОЯНИЕ ==================
 const store = {
   ready: 0,
   pending: 0,
@@ -201,18 +112,12 @@ const store = {
   cookAwaitingCustomQty: false
 };
 
-// ================== EXPRESS + WEBHOOK ==================
 const app = express();
 app.use(express.json());
-
-// healthcheck
 app.get("/", (req, res) => res.send("OK"));
-
-// webhook от Telegram
 app.post("/webhook", async (req, res) => {
   const update = req.body;
   console.log("UPDATE:", JSON.stringify(update));
-
   try {
     if (update.message) {
       await handleMessage(update.message);
@@ -222,11 +127,9 @@ app.post("/webhook", async (req, res) => {
   } catch (e) {
     console.error("HANDLE UPDATE ERROR:", e);
   }
-
   res.sendStatus(200);
 });
 
-// ================== ЛОГИКА БОТА ==================
 async function sendMessage(chatId, text, extra = {}) {
   try {
     await fetch(`${TELEGRAM_API}/sendMessage`, {
@@ -271,11 +174,9 @@ function antiShtrafCheck() {
   }
 }
 
-// ================== ЛОГИКА handleMessage ==================
 async function handleMessage(msg) {
   const id = msg.chat.id;
   const text = msg.text || "";
-
   console.log("CHAT:", id, text);
 
   if (text === "/start") {
@@ -288,65 +189,36 @@ async function handleMessage(msg) {
     return sendMessage(id, "Нет доступа.");
   }
 
-  // НОВАЯ КОМАНДА ДЛЯ ТОЧЕК
   if (text === "/debug_stores" && id === CASHIER) {
-    await sendMessage(id, "Получаю организации и точки...");
-    
-    try {
-      const organizations = await getOrganizations();
-      
-      if (!organizations || organizations.length === 0) {
-        return sendMessage(id, "❌ Не удалось получить организации");
-      }
-      
-      let message = "🏪 *Организации и точки:*\n\n";
-      
-      for (const org of organizations.slice(0, 10)) {
-        message += `📋 *${org.name || 'Без названия'}*\n`;
-        message += `ID: \`${org.id || 'нет'}\`\n`;
-        
-        if (org.address) message += `Адрес: ${org.address}\n`;
-        if (org.phone) message += `Телефон: ${org.phone}\n`;
-        
-        // Получаем отделы для этой организации
-        const departments = await getDepartments(org.id);
-        if (departments && departments.length > 0) {
-          message += `\n*Отделы:*\n`;
-          departments.forEach(dept => {
-            message += `• ${dept.name || 'Без названия'}`;
-            if (dept.externalId) message += ` (ID: \`${dept.externalId}\`)`;
-            message += `\n`;
-          });
-        }
-        
-        message += `\n`;
-      }
-      
-      return sendMessage(id, message, { parse_mode: "Markdown" });
-      
-    } catch (error) {
-      console.error("DEBUG_STORES ERROR:", error);
-      return sendMessage(id, `❌ Ошибка: ${error.message}`);
+    const stores = await getStores();
+    if (!stores.length) {
+      return sendMessage(id, "❌ Не получил список точек");
     }
+    let message = "🏪 *Точки/Склады:*\n\n";
+    stores.forEach(store => {
+      message += `• ${store.name || 'Без названия'}\n`;
+      if (store.address) message += `  Адрес: ${store.address}\n`;
+      message += `  ID: \`${store.id}\`\n\n`;
+    });
+    return sendMessage(id, message, { parse_mode: "Markdown" });
   }
 
   if (text === "/debug_iiko" && id === CASHIER) {
     await sendMessage(id, "Получаю данные из iiko...");
-
-    const organizations = await getOrganizations();
+    const stores = await getStores();
     const products = await getProducts();
 
-    if (!organizations.length && !products.length) {
+    if (!stores.length && !products.length) {
       return sendMessage(
         id,
         "❌ Не удалось получить данные из iiko.\nСкорее всего, неверный логин/пароль или нет доступа к API."
       );
     }
 
-    let out = "📍 *Организации:*\n";
-    organizations.slice(0, 10).forEach((org) => {
-      out += `• ${org.name || 'Без названия'} — \`${org.id || 'нет'}\`\n`;
-      if (org.address) out += `  Адрес: ${org.address}\n`;
+    let out = "📍 *Точки:*\n";
+    stores.slice(0, 10).forEach((s) => {
+      out += `• ${s.name} — \`${s.id}\`\n`;
+      if (s.address) out += `  Адрес: ${s.address}\n`;
     });
 
     out += "\n🍞 *Продукты (первые 5):*\n";
@@ -366,11 +238,9 @@ async function handleMessage(msg) {
       const qty = Number(text);
       store.pending = qty;
       store.lastRequestQty = qty;
-
       await sendMessage(id, `Заявка отправлена: *${qty} шт.*`, {
         parse_mode: "Markdown"
       });
-
       if (COOK) {
         await sendMessage(
           COOK,
@@ -386,7 +256,6 @@ async function handleMessage(msg) {
           }
         );
       }
-
       antiShtrafCheck();
       return;
     }
@@ -401,11 +270,9 @@ async function handleMessage(msg) {
       store.awaitCustomQty = false;
       store.pending = qty;
       store.lastRequestQty = qty;
-
       await sendMessage(id, `Заявка отправлена: *${qty} шт.*`, {
         parse_mode: "Markdown"
       });
-
       if (COOK) {
         await sendMessage(
           COOK,
@@ -421,7 +288,6 @@ async function handleMessage(msg) {
           }
         );
       }
-
       antiShtrafCheck();
       return;
     }
@@ -437,41 +303,34 @@ async function handleMessage(msg) {
 
   if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
     const qty = Number(text);
-
     store.ready += qty;
     store.pending = 0;
     store.cookAwaitingCustomQty = false;
-
     await sendMessage(COOK, `Принято: *${qty} шт.*`, {
       parse_mode: "Markdown"
     });
     await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, {
       parse_mode: "Markdown"
     });
-
     antiShtrafCheck();
   }
 }
 
-// ================== ЛОГИКА handleCallback ==================
 async function handleCallback(query) {
   const id = query.message.chat.id;
   const action = query.data;
-
   if (id !== COOK) return;
 
   if (action === "cook_done") {
     const qty = store.lastRequestQty;
     store.ready += qty;
     store.pending = 0;
-
     await sendMessage(COOK, `Готово! *${qty} шт.*`, {
       parse_mode: "Markdown"
     });
     await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*`, {
       parse_mode: "Markdown"
     });
-
     antiShtrafCheck();
   }
 
@@ -491,7 +350,6 @@ async function handleCallback(query) {
   }
 }
 
-// ================== START SERVER ==================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log("Server running on", PORT);
