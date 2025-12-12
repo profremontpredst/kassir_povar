@@ -290,7 +290,15 @@ async function createProductionDocument(storeId, productId, amount) {
     `${IIKO_HOST}/documents/import/productionDocument` +
     `?key=${encodeURIComponent(IIKO_SESSION)}`;
 
-  const today = new Date().toISOString().slice(0, 10);
+    function formatDateDDMMYYYY() {
+      const d = new Date();
+      const dd = String(d.getDate()).padStart(2, "0");
+      const mm = String(d.getMonth() + 1).padStart(2, "0");
+      const yyyy = d.getFullYear();
+      return `${dd}.${mm}.${yyyy}`;
+    }
+    
+    const today = formatDateDDMMYYYY();    
 
   const xml = `
 <document>
@@ -303,8 +311,9 @@ async function createProductionDocument(storeId, productId, amount) {
     <item>
       <num>1</num>
       <product>${productId}</product>
+      <amountUnit>GUID_ЕДИНИЦЫ</amountUnit>
       <amount>${amount}</amount>
-    </item>
+    </item>    
   </items>
 </document>
 `.trim();
