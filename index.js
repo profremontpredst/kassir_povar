@@ -286,38 +286,36 @@ async function createIncomingInvoice(storeId, productId, amount) {
   const ok = await ensureIikoSession();
   if (!ok) return false;
 
-  const xml = `
-  <incomingDocument>
-    <storeId>${storeId}</storeId>
-    <items>
-      <item>
-        <productId>${productId}</productId>
-        <amount>${amount}</amount>
-      </item>
-    </items>
-  </incomingDocument>
-  `.trim();
+  const url =
+    `${IIKO_HOST}/v2/documents/incoming/create` +
+    `?key=${encodeURIComponent(IIKO_SESSION)}`;
+
+  const body = {
+    store: storeId,
+    items: [
+      {
+        product: productId,
+        amount: amount
+      }
+    ]
+  };
 
   try {
-    const res = await fetch(`${IIKO_HOST}/storage/incomingInvoice`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/xml",
-        Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
+        "Content-Type": "application/json"
       },
-      body: xml
+      body: JSON.stringify(body)
     });
 
     const raw = await res.text();
-    console.log("INVOICE STATUS:", res.status);
-    console.log("INVOICE RAW (first 300):", raw.slice(0, 300));
+    console.log("INCOMING STATUS:", res.status);
+    console.log("INCOMING RAW (first 300):", raw.slice(0, 300));
 
-    if (!res.ok) return false;
-    if (raw.includes("<error")) return false;
-
-    return true;
+    return res.ok;
   } catch (e) {
-    console.error("CREATE INVOICE ERROR:", e);
+    console.error("CREATE INCOMING ERROR:", e);
     return false;
   }
 }
