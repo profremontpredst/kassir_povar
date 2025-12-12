@@ -387,6 +387,65 @@ async function handleMessage(msg) {
     return sendMessage(id, out);
   }
 
+  // === ДЕБАГ: ВСЕ АКТЫ ПРОИЗВОДСТВА ПО СКЛАДУ (МИРА 45)
+if (text === "/debug_production" && id === CASHIER) {
+  const storeId = STORE_BY_CASHIER[id];
+  if (!storeId) {
+    return sendMessage(id, "Кассир не привязан к складу.");
+  }
+
+  await sendMessage(id, "Получаю акты производства из iiko...");
+
+  const ok = await ensureIikoSession();
+  if (!ok) return sendMessage(id, "Ошибка авторизации iiko.");
+
+  // сегодняшний день
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  const dateFrom = `${dd}.${mm}.${yyyy}`;
+  const dateTo = dateFrom;
+
+  const url =
+    `${IIKO_HOST}/documents/production/list` +
+    `?key=${encodeURIComponent(IIKO_SESSION)}` +
+    `&dateFrom=${dateFrom}` +
+    `&dateTo=${dateTo}` +
+    `&store=${encodeURIComponent(storeId)}`;
+
+  try {
+    const res = await fetch(url);
+    const raw = await res.text();
+
+    if (!raw || !raw.includes("<document>")) {
+      return sendMessage(id, "Акты не найдены.");
+    }
+
+    const docs = raw.split("<document>").slice(1);
+
+    let out = "Акты производства (iiko):\n\n";
+
+    for (const doc of docs) {
+      const num = doc.match(/<documentNumber>([^<]+)<\/documentNumber>/)?.[1];
+      const date = doc.match(/<dateIncoming>([^<]+)<\/dateIncoming>/)?.[1];
+      const comment = doc.match(/<comment>([^<]+)<\/comment>/)?.[1];
+
+      if (!num) continue;
+
+      out += `• ${num}\n`;
+      if (date) out += `  Дата: ${date}\n`;
+      if (comment) out += `  Коммент: ${comment}\n`;
+      out += `\n`;
+    }
+
+    return sendMessage(id, out.slice(0, 4000));
+  } catch (e) {
+    console.error("DEBUG PRODUCTION ERROR:", e);
+    return sendMessage(id, "Ошибка получения актов (см. лог сервера).");
+  }
+}
+
   // === КАССИР
   if (id === CASHIER) {
     if (text === "🍳 Приготовить пирожки") {
