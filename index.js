@@ -1,12 +1,14 @@
 import express from "express";
 import fetch from "node-fetch";
 
+// ================== TELEGRAM ==================
 const TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TOKEN}`;
 
 const CASHIER = Number(process.env.CASHIER_CHAT_ID || 0);
 const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
+// ================== IIKO ==================
 const IIKO_HOST = "https://db-co.iiko.it/resto/api";
 const IIKO_LOGIN = "xxxppp";
 const IIKO_PASS_SHA1 = "72c5a5ac08f9d59e333b74f41e4fced5c7b983f7";
@@ -24,9 +26,10 @@ let IIKO_SESSION = null;
 // ===== АВТОРИЗАЦИЯ IIKO =====
 async function iikoAuth() {
   try {
-    const url = `${IIKO_HOST}/auth?login=${encodeURIComponent(IIKO_LOGIN)}&pass=${encodeURIComponent(
-      IIKO_PASS_SHA1
-    )}`;
+    const url = `${IIKO_HOST}/auth?login=${encodeURIComponent(
+      IIKO_LOGIN
+    )}&pass=${encodeURIComponent(IIKO_PASS_SHA1)}`;
+
     const res = await fetch(url);
     const raw = (await res.text()).trim();
     console.log("IIKO AUTH RAW:", raw);
@@ -159,7 +162,6 @@ app.post("/webhook", (req, res) => {
 
   (async () => {
     try {
-      // console.log("UPDATE:", JSON.stringify(update));
       if (update.message) await handleMessage(update.message);
       else if (update.callback_query) await handleCallback(update.callback_query);
     } catch (e) {
@@ -200,46 +202,78 @@ const quantityMenu = {
 };
 
 // =======================================================
-// ============ РЕАЛЬНЫЙ ОСТАТОК ИЗ IIKO =================
+// ============ РЕАЛЬНЫЙ ОСТАТОК ИЗ IIKO (ПРАВИЛЬНО) =====
 // =======================================================
 
-// достаём число из XML/JSON (если продукт один — берём первое <amount>)
-function extractAmount(raw) {
-  if (!raw) return null;
-
-  let m = raw.match(/<amount>\s*([^<]+)\s*<\/amount>/i);
-  if (m) return Number(String(m[1]).trim().replace(",", "."));
-
-  m = raw.match(/"amount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
-  if (m) return Number(m[1]);
-
-  return null;
+function pad2(n) {
+  return String(n).padStart(2, "0");
 }
 
-// ОСНОВНОЙ метод: /storage/stock (у тебя 404 на /storage/rests)
+// локальный timestamp yyyy-MM-dd'T'HH:mm:ss
+function makeTimestampLocal() {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const MM = pad2(d.getMonth() + 1);
+  const dd = pad2(d.getDate());
+  const HH = pad2(d.getHours());
+  const mm = pad2(d.getMinutes());
+  const ss = pad2(d.getSeconds());
+  return `${yyyy}-${MM}-${dd}T${HH}:${mm}:${ss}`;
+}
+
+// /v2/reports/balance/stores?key=...&timestamp=...&store=...&product=...
 async function getRealStock(storeId, productId) {
   const ok = await ensureIikoSession();
   if (!ok) return null;
 
-  const urlStock = `${IIKO_HOST}/storage/stock?storeId=${encodeURIComponent(storeId)}&productId=${encodeURIComponent(
-    productId
-  )}`;
+  const ts = makeTimestampLocal();
+
+  const url =
+    `${IIKO_HOST}/v2/reports/balance/stores` +
+    `?key=${encodeURIComponent(IIKO_SESSION)}` +
+    `&timestamp=${encodeURIComponent(ts)}` +
+    `&store=${encodeURIComponent(storeId)}` +
+    `&product=${encodeURIComponent(productId)}`;
 
   try {
-    const res = await fetch(urlStock, {
-      headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
-    });
+    let res = await fetch(url);
+    let raw = await res.text();
+    console.log("BALANCE STATUS:", res.status);
+    console.log("BALANCE RAW (first 300):", raw.slice(0, 300));
 
-    const raw = await res.text();
-    console.log("REAL STOCK STATUS:", res.status);
-    console.log("REAL STOCK RAW (first 300):", raw.slice(0, 300));
+    // если токен протух — перелогин
+    if (/Token is expired/i.test(raw) || res.status === 401 || res.status === 403) {
+      IIKO_SESSION = null;
+      const ok2 = await ensureIikoSession();
+      if (!ok2) return null;
 
-    if (!res.ok) return null;
+      const url2 =
+        `${IIKO_HOST}/v2/reports/balance/stores` +
+        `?key=${encodeURIComponent(IIKO_SESSION)}` +
+        `&timestamp=${encodeURIComponent(ts)}` +
+        `&store=${encodeURIComponent(storeId)}` +
+        `&product=${encodeURIComponent(productId)}`;
 
-    const amount = extractAmount(raw);
-    return Number.isFinite(amount) ? amount : null;
+      res = await fetch(url2);
+      raw = await res.text();
+      console.log("BALANCE RETRY STATUS:", res.status);
+      console.log("BALANCE RETRY RAW (first 300):", raw.slice(0, 300));
+    }
+
+    // ожидаем JSON-массив
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+
+    if (!Array.isArray(data) || !data.length) return 0;
+
+    const amount = Number(data[0]?.amount ?? 0);
+    return Number.isFinite(amount) ? amount : 0;
   } catch (e) {
-    console.error("REAL STOCK ERROR:", e);
+    console.error("BALANCE ERROR:", e);
     return null;
   }
 }
@@ -354,7 +388,6 @@ async function handleMessage(msg) {
       const stock = await getRealStock(storeId, PRODUCT_PYROJOK);
       if (stock === null) return sendMessage(id, "Не удалось получить остатки из iiko (см. лог сервера).");
 
-      // дополнительно покажем “готовятся” (это локально)
       return sendMessage(id, `Реальный остаток в iiko: ${stock}\nГотовятся (в работе): ${state.pending}`);
     }
 
@@ -364,10 +397,11 @@ async function handleMessage(msg) {
       state.lastRequestQty = qty;
       state.lastCashierId = id;
 
-      await sendMessage(id, `Заявка отправлена: ${qty} шт.`);
+      await sendMessage(id, `Заявка отправлена: ${qty} шт.`, { parse_mode: "Markdown" });
 
       if (COOK) {
-        await sendMessage(COOK, `Новая заявка: ${qty} шт.\nПодтвердите:`, {
+        await sendMessage(COOK, `🔥 Новая заявка: *${qty} шт.*\nПодтвердите:`, {
+          parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [
               [{ text: "Готово", callback_data: "cook_done" }],
@@ -398,7 +432,8 @@ async function handleMessage(msg) {
       await sendMessage(id, `Заявка отправлена: ${qty} шт.`);
 
       if (COOK) {
-        await sendMessage(COOK, `Новая заявка: ${qty} шт.\nПодтвердите:`, {
+        await sendMessage(COOK, `🔥 Новая заявка: *${qty} шт.*\nПодтвердите:`, {
+          parse_mode: "Markdown",
           reply_markup: {
             inline_keyboard: [
               [{ text: "Готово", callback_data: "cook_done" }],
