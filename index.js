@@ -3,6 +3,7 @@ import fetch from "node-fetch";
 
 const TOKEN = process.env.BOT_TOKEN;
 const TELEGRAM_API = `https://api.telegram.org/bot${TOKEN}`;
+
 const CASHIER = Number(process.env.CASHIER_CHAT_ID || 0);
 const COOK = Number(process.env.COOK_CHAT_ID || 0);
 
@@ -15,15 +16,17 @@ const STORE_BY_CASHIER = {
   6928022952: "38a7adba-8855-4770-a1a8-f425354ff624" // Склад на Мира 45
 };
 
-// === Продукт ===
+// === Реальный продукт (ID из iiko) ===
 const PRODUCT_PYROJOK = "d9e9ed5c-c6a5-4b71-93b4-9d666cbbd4a0";
 
 let IIKO_SESSION = null;
 
-// ===== АВТОРИЗАЦИЯ =====
+// ===== АВТОРИЗАЦИЯ IIKO =====
 async function iikoAuth() {
   try {
-    const url = `${IIKO_HOST}/auth?login=${IIKO_LOGIN}&pass=${IIKO_PASS_SHA1}`;
+    const url = `${IIKO_HOST}/auth?login=${encodeURIComponent(IIKO_LOGIN)}&pass=${encodeURIComponent(
+      IIKO_PASS_SHA1
+    )}`;
     const res = await fetch(url);
     const raw = (await res.text()).trim();
     console.log("IIKO AUTH RAW:", raw);
@@ -84,7 +87,7 @@ async function getStores() {
     });
 
     let raw = await res.text();
-    console.log("STORES XML RAW:", raw.slice(0, 500));
+    console.log("STORES XML RAW (first 300):", raw.slice(0, 300));
 
     if (/Token is expired/i.test(raw)) {
       IIKO_SESSION = null;
@@ -131,13 +134,13 @@ async function getProducts() {
   }
 }
 
-// ===== Стейт =====
-const store = {
-  ready: 0,
+// ===== Стейт (виртуалка только для статуса “готовятся”) =====
+const state = {
   pending: 0,
   lastRequestQty: 0,
   awaitCustomQty: false,
-  cookAwaitingCustomQty: false
+  cookAwaitingCustomQty: false,
+  lastCashierId: CASHIER || 0
 };
 
 // =======================================================
@@ -149,15 +152,20 @@ app.use(express.json());
 
 app.get("/", (req, res) => res.send("OK"));
 
-app.post("/webhook", async (req, res) => {
+// ВАЖНО: отвечаем Telegram сразу, чтобы он не ретраил вебхук и не слал дубли
+app.post("/webhook", (req, res) => {
   const update = req.body;
-  try {
-    if (update.message) await handleMessage(update.message);
-    else if (update.callback_query) await handleCallback(update.callback_query);
-  } catch (e) {
-    console.error("UPDATE ERROR:", e);
-  }
   res.sendStatus(200);
+
+  (async () => {
+    try {
+      // console.log("UPDATE:", JSON.stringify(update));
+      if (update.message) await handleMessage(update.message);
+      else if (update.callback_query) await handleCallback(update.callback_query);
+    } catch (e) {
+      console.error("HANDLE UPDATE ERROR:", e);
+    }
+  })();
 });
 
 async function sendMessage(chatId, text, extra = {}) {
@@ -174,10 +182,7 @@ async function sendMessage(chatId, text, extra = {}) {
 
 const cashierMenu = {
   reply_markup: {
-    keyboard: [
-      [{ text: "🍳 Приготовить пирожки" }],
-      [{ text: "📦 Остатки пирожков" }]
-    ],
+    keyboard: [[{ text: "🍳 Приготовить пирожки" }], [{ text: "📦 Остатки пирожков" }]],
     resize_keyboard: true
   }
 };
@@ -194,175 +199,48 @@ const quantityMenu = {
   }
 };
 
-function antiShtrafCheck() {
-  if (store.ready + store.pending < 10 && CASHIER) {
-    sendMessage(
-      CASHIER,
-      "⚠️ Критически мало пирожков (<10)! Риск отключения Яндекса.",
-      { parse_mode: "Markdown" }
-    );
-  }
+// =======================================================
+// ============ РЕАЛЬНЫЙ ОСТАТОК ИЗ IIKO =================
+// =======================================================
+
+// достаём число из XML/JSON (если продукт один — берём первое <amount>)
+function extractAmount(raw) {
+  if (!raw) return null;
+
+  let m = raw.match(/<amount>\s*([^<]+)\s*<\/amount>/i);
+  if (m) return Number(String(m[1]).trim().replace(",", "."));
+
+  m = raw.match(/"amount"\s*:\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (m) return Number(m[1]);
+
+  return null;
 }
 
-// =======================================================
-// ====================== ОСНОВНАЯ ЛОГИКА ===============
-// =======================================================
-
+// ОСНОВНОЙ метод: /storage/stock (у тебя 404 на /storage/rests)
 async function getRealStock(storeId, productId) {
   const ok = await ensureIikoSession();
   if (!ok) return null;
 
+  const urlStock = `${IIKO_HOST}/storage/stock?storeId=${encodeURIComponent(storeId)}&productId=${encodeURIComponent(
+    productId
+  )}`;
+
   try {
-    const res = await fetch(
-      `${IIKO_HOST}/storage/rests?storeId=${storeId}&productId=${productId}`,
-      {
-        headers: {
-          Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
-        }
-      }
-    );
+    const res = await fetch(urlStock, {
+      headers: { Cookie: `key=${encodeURIComponent(IIKO_SESSION)}` }
+    });
 
     const raw = await res.text();
-    console.log("REAL STOCK RAW:", raw);
+    console.log("REAL STOCK STATUS:", res.status);
+    console.log("REAL STOCK RAW (first 300):", raw.slice(0, 300));
 
-    const match = raw.match(/<amount>([^<]+)<\/amount>/);
-    if (!match) return null;
+    if (!res.ok) return null;
 
-    return Number(match[1].trim());
+    const amount = extractAmount(raw);
+    return Number.isFinite(amount) ? amount : null;
   } catch (e) {
     console.error("REAL STOCK ERROR:", e);
     return null;
-  }
-}
-
-async function handleMessage(msg) {
-  const id = msg.chat.id;
-  const text = msg.text || "";
-
-  if (text === "/start") {
-    if (id === CASHIER) return sendMessage(id, "Готов к работе, кассир 👩‍💼", cashierMenu);
-    if (id === COOK) return sendMessage(id, "Готов к работе, повар 👨‍🍳");
-    return sendMessage(id, "Нет доступа.");
-  }
-
-  // === Дебаг команд
-  if (text === "/debug_stores" && id === CASHIER) {
-    const stores = await getStores();
-    if (!stores.length) return sendMessage(id, "❌ Не получил список точек");
-    let message = "🏪 *Точки/Склады:*\n\n";
-    stores.forEach(s => {
-      message += `• ${s.name}\n  ID: \`${s.id}\`\n\n`;
-    });
-    return sendMessage(id, message, { parse_mode: "Markdown" });
-  }
-
-  if (text === "/debug_iiko" && id === CASHIER) {
-    await sendMessage(id, "Получаю данные из iiko...");
-    const stores = await getStores();
-    const products = await getProducts();
-    let out = "📍 *Точки:*\n";
-    stores.slice(0, 10).forEach(s => {
-      out += `• ${s.name} — \`${s.id}\`\n`;
-    });
-    out += "\n🍞 *Продукты (первые 5):*\n";
-    products.slice(0, 5).forEach(p => {
-      out += `• ${p.name} — \`${p.id}\`\n`;
-    });
-    return sendMessage(id, out, { parse_mode: "Markdown" });
-  }
-
-  // === КАССИР ===
-  if (id === CASHIER) {
-    if (text === "🍳 Приготовить пирожки") {
-      return sendMessage(id, "Выберите количество:", quantityMenu);
-    }
-
-    if (text === "⬅️ Назад") {
-      return sendMessage(id, "Главное меню:", cashierMenu);
-    }    
-    if (["5", "10", "15", "20"].includes(text)) {
-      const qty = Number(text);
-      store.pending = qty;
-      store.lastRequestQty = qty;
-      await sendMessage(id, `Заявка отправлена: *${qty} шт.*`, { parse_mode: "Markdown" });
-      await sendMessage(COOK, `🔥 Новая заявка: *${qty} пирожков*`, {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "Готово", callback_data: "cook_done" }],
-            [{ text: "Другое количество", callback_data: "cook_other" }]
-          ]
-        }
-      });
-      antiShtrafCheck();
-      return;
-    }
-
-    if (text === "Ввести своё количество") {
-      store.awaitCustomQty = true;
-      return sendMessage(id, "Введите число пирожков:");
-    }
-
-    if (store.awaitCustomQty && !isNaN(Number(text))) {
-      const qty = Number(text);
-      store.awaitCustomQty = false;
-      store.pending = qty;
-      store.lastRequestQty = qty;
-      await sendMessage(id, `Заявка отправлена: *${qty} шт.*`);
-
-      await sendMessage(COOK, `🔥 Новая заявка: *${qty} пирожков*`, {
-        parse_mode: "Markdown",
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "Готово", callback_data: "cook_done" }],
-            [{ text: "Другое количество", callback_data: "cook_other" }]
-          ]
-        }
-      });
-      antiShtrafCheck();
-      return;
-    }
-
-    if (text === "📦 Остатки пирожков") {
-      const storeId = STORE_BY_CASHIER[CASHIER];
-      const productId = PRODUCT_PYROJOK;
-    
-      const stock = await getRealStock(storeId, productId);
-    
-      if (stock === null) {
-        return sendMessage(id, "❌ Не удалось получить остатки из iiko");
-      }
-    
-      return sendMessage(
-        id,
-        `📦 *Реальный остаток в iiko:*\n*${stock} шт.*`,
-        { parse_mode: "Markdown" }
-      );
-    }    
-  }
-
-  // === ПОВАР вводит своё количество ===
-  if (id === COOK && store.cookAwaitingCustomQty && !isNaN(Number(text))) {
-    const qty = Number(text);
-    store.ready += qty;
-    store.pending = 0;
-    store.cookAwaitingCustomQty = false;
-
-    const storeId = STORE_BY_CASHIER[CASHIER];
-    const productId = PRODUCT_PYROJOK;
-
-    const ok = await createIncomingInvoice(storeId, productId, qty);
-
-    if (!ok) {
-      await sendMessage(COOK, "❌ Ошибка записи в iiko");
-      await sendMessage(CASHIER, "❌ Не удалось записать приход в iiko");
-    } else {
-      await sendMessage(COOK, `Принято: *${qty} шт.*\nЗаписано в iiko ✔`);
-      await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*\nОстатки в iiko обновлены ✔`);
-    }
-
-    antiShtrafCheck();
-    return;
   }
 }
 
@@ -397,8 +275,10 @@ async function createIncomingInvoice(storeId, productId, amount) {
     });
 
     const raw = await res.text();
-    console.log("INVOICE RAW:", raw);
+    console.log("INVOICE STATUS:", res.status);
+    console.log("INVOICE RAW (first 300):", raw.slice(0, 300));
 
+    if (!res.ok) return false;
     if (raw.includes("<error")) return false;
 
     return true;
@@ -409,7 +289,161 @@ async function createIncomingInvoice(storeId, productId, amount) {
 }
 
 // =======================================================
-// ================== CALL BACK ==========================
+// ====================== ОСНОВНАЯ ЛОГИКА ===============
+// =======================================================
+
+async function handleMessage(msg) {
+  const id = msg.chat.id;
+  const text = msg.text || "";
+  console.log("CHAT:", id, text);
+
+  if (text === "/start") {
+    if (id === CASHIER) return sendMessage(id, "Готов к работе, кассир", cashierMenu);
+    if (id === COOK) return sendMessage(id, "Готов к работе, повар");
+    return sendMessage(id, "Нет доступа.");
+  }
+
+  // === ДЕБАГ
+  if (text === "/debug_stores" && id === CASHIER) {
+    await sendMessage(id, "Получаю точки из iiko...");
+    const stores = await getStores();
+    if (!stores.length) return sendMessage(id, "Не получил список точек");
+
+    let message = "Точки/Склады:\n\n";
+    stores.forEach((s) => {
+      message += `• ${s.name || "Без названия"}\n`;
+      if (s.address) message += `  Адрес: ${s.address}\n`;
+      message += `  ID: ${s.id}\n\n`;
+    });
+
+    return sendMessage(id, message);
+  }
+
+  if (text === "/debug_iiko" && id === CASHIER) {
+    await sendMessage(id, "Получаю данные из iiko...");
+    const stores = await getStores();
+    const products = await getProducts();
+
+    let out = "Точки:\n";
+    stores.slice(0, 10).forEach((s) => {
+      out += `• ${s.name} — ${s.id}\n`;
+    });
+
+    out += "\nПродукты (первые 5):\n";
+    products.slice(0, 5).forEach((p) => {
+      out += `• ${p.name} — ${p.id}\n`;
+    });
+
+    return sendMessage(id, out);
+  }
+
+  // === КАССИР
+  if (id === CASHIER) {
+    if (text === "🍳 Приготовить пирожки") {
+      return sendMessage(id, "Выберите количество:", quantityMenu);
+    }
+
+    if (text === "⬅️ Назад") {
+      return sendMessage(id, "Главное меню:", cashierMenu);
+    }
+
+    if (text === "📦 Остатки пирожков") {
+      const storeId = STORE_BY_CASHIER[id];
+      if (!storeId) return sendMessage(id, "Кассир не привязан к складу (STORE_BY_CASHIER).");
+
+      const stock = await getRealStock(storeId, PRODUCT_PYROJOK);
+      if (stock === null) return sendMessage(id, "Не удалось получить остатки из iiko (см. лог сервера).");
+
+      // дополнительно покажем “готовятся” (это локально)
+      return sendMessage(id, `Реальный остаток в iiko: ${stock}\nГотовятся (в работе): ${state.pending}`);
+    }
+
+    if (["5", "10", "15", "20"].includes(text)) {
+      const qty = Number(text);
+      state.pending = qty;
+      state.lastRequestQty = qty;
+      state.lastCashierId = id;
+
+      await sendMessage(id, `Заявка отправлена: ${qty} шт.`);
+
+      if (COOK) {
+        await sendMessage(COOK, `Новая заявка: ${qty} шт.\nПодтвердите:`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Готово", callback_data: "cook_done" }],
+              [{ text: "Другое количество", callback_data: "cook_other" }]
+            ]
+          }
+        });
+      }
+      return;
+    }
+
+    if (text === "Ввести своё количество") {
+      state.awaitCustomQty = true;
+      return sendMessage(id, "Введите число:");
+    }
+
+    if (state.awaitCustomQty) {
+      const qty = Number(text);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return sendMessage(id, "Введите число (например 5).");
+      }
+
+      state.awaitCustomQty = false;
+      state.pending = qty;
+      state.lastRequestQty = qty;
+      state.lastCashierId = id;
+
+      await sendMessage(id, `Заявка отправлена: ${qty} шт.`);
+
+      if (COOK) {
+        await sendMessage(COOK, `Новая заявка: ${qty} шт.\nПодтвердите:`, {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "Готово", callback_data: "cook_done" }],
+              [{ text: "Другое количество", callback_data: "cook_other" }]
+            ]
+          }
+        });
+      }
+      return;
+    }
+  }
+
+  // === ПОВАР вводит своё количество после “Другое количество”
+  if (id === COOK && state.cookAwaitingCustomQty) {
+    const qty = Number(text);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      return sendMessage(COOK, "Введите число (например 5).");
+    }
+
+    state.cookAwaitingCustomQty = false;
+    state.pending = 0;
+
+    const cashierId = state.lastCashierId || CASHIER;
+    const storeId = STORE_BY_CASHIER[cashierId];
+    if (!storeId) {
+      await sendMessage(COOK, "Ошибка: кассир не привязан к складу.");
+      return;
+    }
+
+    const ok = await createIncomingInvoice(storeId, PRODUCT_PYROJOK, qty);
+
+    if (!ok) {
+      await sendMessage(COOK, "Ошибка записи в iiko (см. лог сервера).");
+      if (cashierId) await sendMessage(cashierId, "Не удалось записать приход в iiko (см. лог сервера).");
+      return;
+    }
+
+    await sendMessage(COOK, `Принято: ${qty} шт.\nЗаписано в iiko.`);
+    if (cashierId) await sendMessage(cashierId, `Повар приготовил: ${qty} шт.\nЗаписано в iiko.`);
+    return;
+  }
+}
+
+// =======================================================
+// ================== CALLBACK ОТ ПОВАРА =================
 // =======================================================
 
 async function handleCallback(query) {
@@ -419,36 +453,41 @@ async function handleCallback(query) {
   if (id !== COOK) return;
 
   if (action === "cook_done") {
-    const qty = store.lastRequestQty;
-    store.ready += qty;
-    store.pending = 0;
+    const qty = Number(state.lastRequestQty || 0);
+    state.pending = 0;
 
-    const storeId = STORE_BY_CASHIER[CASHIER];
-    const productId = PRODUCT_PYROJOK;
-
-    const ok = await createIncomingInvoice(storeId, productId, qty);
-
-    if (!ok) {
-      await sendMessage(COOK, "❌ Ошибка записи в iiko");
-      await sendMessage(CASHIER, "❌ Не удалось записать приход в iiko");
-    } else {
-      await sendMessage(COOK, `Готово! *${qty} шт.*\nЗаписано в iiko ✔`);
-      await sendMessage(CASHIER, `Повар приготовил *${qty} шт.*\nОстатки в iiko обновлены ✔`);
+    const cashierId = state.lastCashierId || CASHIER;
+    const storeId = STORE_BY_CASHIER[cashierId];
+    if (!storeId) {
+      await sendMessage(COOK, "Ошибка: кассир не привязан к складу.");
+      return;
     }
 
-    antiShtrafCheck();
+    const ok = await createIncomingInvoice(storeId, PRODUCT_PYROJOK, qty);
+
+    if (!ok) {
+      await sendMessage(COOK, "Ошибка записи в iiko (см. лог сервера).");
+      if (cashierId) await sendMessage(cashierId, "Не удалось записать приход в iiko (см. лог сервера).");
+    } else {
+      await sendMessage(COOK, `Готово: ${qty} шт.\nЗаписано в iiko.`);
+      if (cashierId) await sendMessage(cashierId, `Повар приготовил: ${qty} шт.\nЗаписано в iiko.`);
+    }
   }
 
   if (action === "cook_other") {
-    store.cookAwaitingCustomQty = true;
+    state.cookAwaitingCustomQty = true;
     await sendMessage(COOK, "Введите количество:");
   }
 
-  await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: query.id })
-  });
+  try {
+    await fetch(`${TELEGRAM_API}/answerCallbackQuery`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ callback_query_id: query.id })
+    });
+  } catch (e) {
+    console.error("ANSWER CALLBACK ERROR:", e);
+  }
 }
 
 // =======================================================
