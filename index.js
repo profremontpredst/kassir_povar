@@ -214,7 +214,7 @@ async function getRealStock(storeId, productId) {
 
   try {
     const res = await fetch(
-      `${IIKO_HOST}/storage/stock?storeId=${storeId}&productId=${productId}`,
+      `${IIKO_HOST}/storage/rests?storeId=${storeId}&productId=${productId}`,
       {
         headers: {
           Cookie: `key=${encodeURIComponent(IIKO_SESSION)}`
@@ -277,6 +277,9 @@ async function handleMessage(msg) {
       return sendMessage(id, "Выберите количество:", quantityMenu);
     }
 
+    if (text === "⬅️ Назад") {
+      return sendMessage(id, "Главное меню:", cashierMenu);
+    }    
     if (["5", "10", "15", "20"].includes(text)) {
       const qty = Number(text);
       store.pending = qty;
