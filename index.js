@@ -282,40 +282,49 @@ async function getRealStock(storeId, productId) {
 // =============== СОЗДАНИЕ ПРИХОДА В IIKO ===============
 // =======================================================
 
-async function createIncomingInvoice(storeId, productId, amount) {
+async function createProductionDocument(storeId, productId, amount) {
   const ok = await ensureIikoSession();
   if (!ok) return false;
 
   const url =
-    `${IIKO_HOST}/v2/documents/incoming/create` +
+    `${IIKO_HOST}/documents/import/productionDocument` +
     `?key=${encodeURIComponent(IIKO_SESSION)}`;
 
-  const body = {
-    store: storeId,
-    items: [
-      {
-        product: productId,
-        amount: amount
-      }
-    ]
-  };
+  const today = new Date().toISOString().slice(0, 10);
+
+  const xml = `
+<document>
+  <storeFrom>${storeId}</storeFrom>
+  <storeTo>${storeId}</storeTo>
+  <dateIncoming>${today}</dateIncoming>
+  <documentNumber>api-prod-${Date.now()}</documentNumber>
+  <comment>Telegram: акт приготовления</comment>
+  <items>
+    <item>
+      <num>1</num>
+      <product>${productId}</product>
+      <amount>${amount}</amount>
+    </item>
+  </items>
+</document>
+`.trim();
 
   try {
     const res = await fetch(url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/xml"
       },
-      body: JSON.stringify(body)
+      body: xml
     });
 
     const raw = await res.text();
-    console.log("INCOMING STATUS:", res.status);
-    console.log("INCOMING RAW (first 300):", raw.slice(0, 300));
+    console.log("PRODUCTION STATUS:", res.status);
+    console.log("PRODUCTION RAW:", raw);
 
-    return res.ok;
+    return res.ok && raw.includes("<valid>true</valid>");
   } catch (e) {
-    console.error("CREATE INCOMING ERROR:", e);
+    console.error("CREATE PRODUCTION ERROR:", e);
     return false;
   }
 }
@@ -461,7 +470,7 @@ async function handleMessage(msg) {
       return;
     }
 
-    const ok = await createIncomingInvoice(storeId, PRODUCT_PYROJOK, qty);
+    const ok = await createProductionDocument(storeId, PRODUCT_PYROJOK, qty);
 
     if (!ok) {
       await sendMessage(COOK, "Ошибка записи в iiko (см. лог сервера).");
@@ -496,7 +505,7 @@ async function handleCallback(query) {
       return;
     }
 
-    const ok = await createIncomingInvoice(storeId, PRODUCT_PYROJOK, qty);
+    const ok = await createProductionDocument(storeId, PRODUCT_PYROJOK, qty);
 
     if (!ok) {
       await sendMessage(COOK, "Ошибка записи в iiko (см. лог сервера).");
