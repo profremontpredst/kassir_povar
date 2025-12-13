@@ -380,7 +380,7 @@ async function handleMessage(msg) {
     });
 
     out += "\nПродукты (первые 5):\n";
-    products.slice(0, 5).forEach((p) => {
+    products.forEach((p) => {
       out += `• ${p.name} — ${p.id}\n`;
     });
 
