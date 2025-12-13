@@ -370,22 +370,21 @@ async function handleMessage(msg) {
   }
 
   if (text === "/debug_iiko" && id === CASHIER) {
-    await sendMessage(id, "Получаю данные из iiko...");
-    const stores = await getStores();
+    await sendMessage(id, "Получаю товары из iiko...");
+  
     const products = await getProducts();
-
-    let out = "Точки:\n";
-    stores.slice(0, 10).forEach((s) => {
-      out += `• ${s.name} — ${s.id}\n`;
+    if (!products.length) {
+      return sendMessage(id, "Товары не получены.");
+    }
+  
+    let out = "Товары (первые 50):\n\n";
+  
+    products.slice(0, 50).forEach((p, i) => {
+      out += `${i + 1}. ${p.name} — ${p.id}\n`;
     });
-
-    out += "\nПродукты (первые 5):\n";
-    products.forEach((p) => {
-      out += `• ${p.name} — ${p.id}\n`;
-    });
-
-    return sendMessage(id, out);
-  }
+  
+    return sendMessage(id, out.slice(0, 4000));
+  }  
 
   // === ДЕБАГ: ВСЕ АКТЫ ПРОИЗВОДСТВА ПО СКЛАДУ (МИРА 45)
 if (text === "/debug_production" && id === CASHIER) {
